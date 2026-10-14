@@ -3,7 +3,7 @@
 Proof House is a curator-run house for fully on-chain art bought by people and AI agents, with agents as
 brokers. This repository holds its Sepolia contracts and the first collection, **ARTIFACTS**: 256 encrypted
 generative pieces — 255 editions and THE SOURCE. Reference: https://github.com/mylesdaughtry/proof-house
-(its `RULES.md`, `PROTOCOL.md`, reference renderer and THE SOURCE payload are vendored under
+(its `RULES.md`, `PROTOCOL.md`, reference renderer `rules.js` and THE SOURCE's renderer page are vendored under
 `reference/`).
 
 No fungible token is created and there is no pool. IMD (`0x44a1Cd38474FB1748400E7DEb5F8D786ccE3F89A` on Sepolia)
@@ -45,11 +45,11 @@ no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH lea
    colour count, direction), the AES-256-GCM encrypted seed and `keccak256(K)`. Then `lock()` — forever.
 8. `ArtifactsFactory.setPrice(wei)` (above zero, only while closed) and `setSaleOpen(true)`.
 9. THE SOURCE: the artist's offline ceremony (`tools/source/ceremony.js` in the Proof House workspace) makes its
-   secret seed and content key K and writes `the-source.sealed.hex` (its metadata, encrypted) and
-   `the-source.public.json` (`keyCommitment = keccak256(K)`). `ArtifactsSource.storePayloadChunk(bytes)` with
-   consecutive ≤24,575-byte slices of the sealed bytes, then `lockPayload(keyCommitment)`. `payloadHash()` must equal
-   the ceremony's `sealedHash`. Then `setAuction(reserveWei, endTime)`. The tests use the public study
-   (`reference/the-source.payload.b64`) encrypted with a test key.
+   secret seed and key K and writes `the-source.renderer.html` (the rules in a page, ≈12.8 KB, public) and
+   `the-source.public.json` (`sealedSeed = seed XOR keccak256(K ‖ uint256(0))`, `keyCommitment = keccak256(K)`).
+   `ArtifactsSource.storeRendererChunk(bytes)` with the page (one chunk), then `lock(sealedSeed, keyCommitment)`.
+   `rendererHash()` must equal the ceremony's `rendererHash`. Then `setAuction(reserveWei, endTime)`. The tests use
+   `reference/the-source.renderer.html` and a test seed and key.
 
 ## ARTIFACTS flow
 
@@ -83,16 +83,18 @@ no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH lea
   rounds up, so a bid always strictly exceeds the high bid, even at dust sizes); a bid in the
   final 10 minutes moves the end to 10 minutes after it; outbid bids are refunded by `withdrawRefund()` (pull).
   `settle()` sends the proceeds through the ledger and deploys THE SOURCE's own contract — a full byte copy of
-  ArtifactsPiece's runtime (not a proxy, so the 1.8 MB revealed answer is copied once) named
-  `ARTIFACTS · THE SOURCE`, carrying `commitment = keccak256(K)`. The stored payload is encrypted: byte j is the
-  plaintext byte XOR byte (j % 32) of keccak256(K ‖ uint256(j / 32)). The winner registers a viewing key on THE
-  SOURCE's contract; the curator calls `deliverKey(wrapped)` once (K wrapped to that key); later owners get K from
-  the owner before them (`rewrapFor` or the escrow). The owner may `reveal(K)` once (K must match the commitment;
-  not while a buyer is in escrow); before that `tokenURI` is the R9 seal, after it returns
-  `data:application/json;base64,` + the stored payload decrypted in place, in ≈13.0M gas (tested under 14M, and
-  byte for byte). If the auction ends with no bid the curator may set it again.
+  ArtifactsPiece's runtime) named `ARTIFACTS · THE SOURCE`, carrying `commitment = keccak256(K)`. THE SOURCE is
+  stored as a seed, never as an image: `sealedSeed = seed XOR keccak256(K ‖ uint256(0))`, plus the renderer page
+  (the rules) that draws it. The winner registers a viewing key on THE SOURCE's contract; the curator calls
+  `deliverKey(wrapped)` once (K wrapped to that key); later owners get K from the owner before them (`rewrapFor` or
+  the escrow). The owner may `reveal(K)` once (K must match the commitment; not while a buyer is in escrow). Before
+  that `tokenURI` is the R9 seal; after it, `revealedSeed()` is public and `tokenURI` keeps the seal as `image` and
+  adds `animation_url = data:text/html;base64,` + the renderer page + the seed + `RENDER_SUFFIX`, which draws THE
+  SOURCE byte for byte in any browser (≈2.75M gas; tested under 3M). If the auction ends with no bid the curator
+  may set it again.
 - **Views**: `price`, `remaining`, `editionsOf`, `pieceContract`, `traitsOf`, `ciphertextOf`, `commitmentOf`,
-  `wrappedKeyOf`, `auctionState`, `keyCommitment`, `keyDelivered`, `revealed`, `revealKey`.
+  `wrappedKeyOf`, `auctionState`, `sealedSeed`, `keyCommitment`, `keyDelivered`, `rendererChunks`, `revealed`,
+  `revealKey`, `revealedSeed`.
 
 ## Plain SVG collections (ArtHouse)
 
@@ -159,4 +161,4 @@ on `reference/` (tests read the payload and reference SVGs). Dependencies: forge
 Tests cover: split invariants per currency (fuzzed), VRF assignment of all 255 editions, claim, escrow and
 re-keying, auction, access control, reentrancy, seals per RULES.md R8, and THE SOURCE's encryption: unreadable
 when stored, revealed only with the committed key, decrypting byte for byte at any length (fuzzed), one curator key
-delivery, no reveal under escrow.
+delivery, no reveal under escrow; after the reveal, the exact renderer page with the seed.

@@ -6,18 +6,22 @@ import {ReentrancyGuard} from "./base/ReentrancyGuard.sol";
 import {SSTORE2} from "./libs/SSTORE2.sol";
 import {Encoding} from "./libs/Encoding.sol";
 import {Seal} from "./libs/Seal.sol";
-import {IArtHouse, IPayloadSource, Traits} from "./interfaces/Interfaces.sol";
+import {IArtHouse, ISourceStore, Traits} from "./interfaces/Interfaces.sol";
 
 /// @notice One ARTIFACTS piece: a one-token ERC-721 + ERC-2981, deployed as an EIP-1167 clone at claim.
 /// Holds the ciphertext pointer, public traits, key commitment and the current owner's wrapped content key.
 /// Runs its own keyed resale escrow and re-keying after plain transfers. THE SOURCE (piece 256) adds a one-time
-/// reveal: its owner publishes its content key, and from then on tokenURI decrypts its stored metadata.
+/// reveal: its owner publishes its content key, which opens its stored seed; from then on tokenURI serves the
+/// on-chain renderer page drawing it from that seed.
 contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
     uint256 public constant TOKEN_ID = 1;
     uint256 public constant ESCROW_TIMEOUT = 72 hours;
     uint16 public constant ROYALTY_BPS = 750;
     uint16 public constant RESALE_BROKER_BPS = 250; // 2.5% of a resale to the broker who brought the buyer
     uint16 public constant BPS = 10_000;
+    /// @notice Closes THE SOURCE's renderer page after its seed (tools/source/renderer.js SUFFIX, byte for byte).
+    string public constant RENDER_SUFFIX =
+        '"),true);document.body.innerHTML=s;try{if(parent!==window)parent.postMessage({artifacts:s},"*")}catch(e){}</script></body></html>';
 
     address public controller; // ArtifactsFactory (editions) or ArtifactsSource (THE SOURCE)
     IArtHouse public house;
@@ -283,14 +287,14 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
 
     // ---------- THE SOURCE ----------
 
-    /// @notice THE SOURCE's owner reveals it to everyone, once and forever, by publishing its content key K. The key
-    /// must match the commitment locked before the auction. Not while a buyer's payment sits in escrow: they paid
-    /// for it sealed.
+    /// @notice THE SOURCE's owner reveals it to everyone, once and forever, by publishing its content key K, which
+    /// opens its stored seed. The key must match the commitment locked before the auction. Not while a buyer's payment
+    /// sits in escrow: they paid for it sealed.
     function reveal(bytes32 key) external {
         if (!isSource) revert NotSource();
         if (msg.sender != ownerOf(TOKEN_ID)) revert NotTokenOwner();
         if (revealed) revert AlreadyRevealed();
-        if (!IPayloadSource(controller).payloadLocked()) revert NotRevealable();
+        if (!ISourceStore(controller).locked()) revert NotRevealable();
         if (escrow.buyer != address(0)) revert EscrowActive();
         if (keccak256(abi.encodePacked(key)) != commitment) revert WrongKey();
         revealKey = key;
@@ -339,50 +343,34 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
         );
     }
 
-    /// @dev "data:application/json;base64," + the stored payload, decrypted in place with the revealed key, assembled
-    /// in one memory buffer and returned directly so the 1.8 MB payload is never copied twice.
+    /// @notice THE SOURCE's seed, once revealed (zero before): the stored sealed seed XOR keccak256(K ‖ uint256(0)).
+    function revealedSeed() public view returns (bytes32) {
+        if (!revealed) return bytes32(0);
+        return ISourceStore(controller).sealedSeed() ^ keccak256(abi.encodePacked(revealKey, uint256(0)));
+    }
+
+    /// @dev After the reveal the seal stays the still image (marketplace thumbnails), and animation_url is the
+    /// on-chain renderer page drawing THE SOURCE from its seed: the rules, stored once, plus the seed.
     function _revealedURI() private view returns (string memory) {
-        bytes32 key = revealKey;
-        address[] memory chunks = IPayloadSource(controller).payloadChunks();
-        uint256 total = 29;
+        string memory seedHex = Encoding.toHexString(revealedSeed());
+        address[] memory chunks = ISourceStore(controller).rendererChunks();
+        bytes memory page;
         for (uint256 i; i < chunks.length; ++i) {
-            total += SSTORE2.size(chunks[i]);
+            page = bytes.concat(page, SSTORE2.read(chunks[i]));
         }
-        bytes memory prefix = "data:application/json;base64,";
-        assembly ("memory-safe") {
-            let ptr := mload(0x40)
-            mstore(ptr, 0x20) // offset of the string
-            mstore(add(ptr, 0x20), total) // length
-            let data := add(ptr, 0x40)
-            mstore(data, mload(add(prefix, 0x20))) // 29 prefix bytes (the tail gets overwritten below)
-            let start := add(data, 29)
-            let cursor := start
-            let n := mload(chunks)
-            for { let i := 0 } lt(i, n) { i := add(i, 1) } {
-                let p := mload(add(add(chunks, 0x20), mul(i, 0x20)))
-                let len := sub(extcodesize(p), 1)
-                extcodecopy(p, cursor, 1, len)
-                cursor := add(cursor, len)
-            }
-            // decrypt in place: payload byte j XOR byte (j % 32) of keccak256(K ‖ uint256(j / 32)), four blocks a
-            // turn; the last turn may run up to four blocks past the payload, into memory nothing else uses
-            mstore(0x00, key)
-            let i := 0
-            for { let at := start } lt(at, cursor) { at := add(at, 0x80) } {
-                mstore(0x20, i)
-                mstore(at, xor(mload(at), keccak256(0x00, 0x40)))
-                mstore(0x20, add(i, 1))
-                mstore(add(at, 0x20), xor(mload(add(at, 0x20)), keccak256(0x00, 0x40)))
-                mstore(0x20, add(i, 2))
-                mstore(add(at, 0x40), xor(mload(add(at, 0x40)), keccak256(0x00, 0x40)))
-                mstore(0x20, add(i, 3))
-                mstore(add(at, 0x60), xor(mload(add(at, 0x60)), keccak256(0x00, 0x40)))
-                i := add(i, 4)
-            }
-            mstore(cursor, 0) // zero what follows the payload (the ABI padding)
-            // pad to a word boundary and return the ABI-encoded string
-            let end := and(add(cursor, 31), not(31))
-            return(ptr, sub(end, ptr))
-        }
+        page = bytes.concat(page, bytes(seedHex), bytes(RENDER_SUFFIX));
+        bytes memory json = abi.encodePacked(
+            '{"name":"',
+            _name,
+            '","description":"THE SOURCE, revealed by its owner. Drawn from its seed by the ARTIFACTS rules stored on-chain.",',
+            '"attributes":[{"trait_type":"Piece","value":"THE SOURCE"},{"trait_type":"Seed","value":"',
+            seedHex,
+            '"}],"image":"data:image/svg+xml;base64,',
+            Encoding.base64(bytes(Seal.source())),
+            '","animation_url":"data:text/html;base64,',
+            Encoding.base64(page),
+            '"}'
+        );
+        return string.concat("data:application/json;base64,", Encoding.base64(json));
     }
 }

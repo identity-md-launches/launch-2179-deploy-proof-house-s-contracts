@@ -1078,7 +1078,7 @@ contract PieceEdgeTest is Fixture {
     }
 
     /// @dev THE SOURCE's reveal gate, reached through a hand-initialised clone with a stub controller.
-    function test_revealNeedsLockedPayload_andEmptyPayloadURI() public {
+    function test_revealNeedsTheSourceLocked_andEmptyRendererURI() public {
         StubController ctl = new StubController();
         ArtifactsPiece src = ArtifactsPiece(Clones.clone(address(pieceImpl)));
         src.initialize(address(ctl), address(house), 256, alice, _traits(256), address(0), SOURCE_COMMITMENT, "", true);
@@ -1089,7 +1089,9 @@ contract PieceEdgeTest is Fixture {
         ctl.setLocked(true);
         vm.prank(alice);
         src.reveal(SOURCE_KEY);
-        assertEq(src.tokenURI(1), "data:application/json;base64,", "no chunks: prefix only");
+        // no renderer stored: still well-formed metadata, the page being just the seed and the closing
+        assertEq(src.revealedSeed(), keccak256(abi.encodePacked(SOURCE_KEY, uint256(0))), "stub seal is zero");
+        assertTrue(bytes(src.tokenURI(1)).length > 29);
         // revealed is write-once and survives a transfer
         vm.prank(alice);
         src.transferFrom(alice, bob, 1);
@@ -1104,42 +1106,42 @@ contract PieceEdgeTest is Fixture {
 contract SourceEdgeTest is Fixture {
     function _lock() internal {
         vm.startPrank(curator);
-        source.storePayloadChunk("payload");
-        source.lockPayload(SOURCE_COMMITMENT);
+        source.storeRendererChunk("payload");
+        source.lock(SEALED_SEED, SOURCE_COMMITMENT);
         vm.stopPrank();
     }
 
     function test_payloadChunkLimits() public {
         vm.startPrank(curator);
         vm.expectRevert(SSTORE2.TooLarge.selector);
-        source.storePayloadChunk(new bytes(24_576));
-        source.storePayloadChunk(new bytes(24_575));
-        assertEq(source.payloadSize(), 24_575);
-        assertEq(source.payloadChunks().length, 1);
-        vm.expectRevert(ArtifactsSource.EmptyPayload.selector);
-        source.storePayloadChunk("");
+        source.storeRendererChunk(new bytes(24_576));
+        source.storeRendererChunk(new bytes(24_575));
+        assertEq(source.rendererSize(), 24_575);
+        assertEq(source.rendererChunks().length, 1);
+        vm.expectRevert(ArtifactsSource.EmptyRenderer.selector);
+        source.storeRendererChunk("");
         vm.stopPrank();
         vm.prank(alice);
         vm.expectRevert(TwoStepOwnable.NotOwner.selector);
-        source.lockPayload(SOURCE_COMMITMENT);
+        source.lock(SEALED_SEED, SOURCE_COMMITMENT);
         vm.prank(alice);
         vm.expectRevert(TwoStepOwnable.NotOwner.selector);
-        source.resetPayload();
+        source.resetRenderer();
     }
 
     /// forge-config: default.fuzz.runs = 64
-    function testFuzz_payloadHashIsKeccakOfConcatenation(bytes memory a, bytes memory b, bytes memory c) public {
+    function testFuzz_rendererHashIsKeccakOfConcatenation(bytes memory a, bytes memory b, bytes memory c) public {
         a = _clip(a);
         b = _clip(b);
         c = _clip(c);
         vm.startPrank(curator);
-        source.storePayloadChunk(a);
-        source.storePayloadChunk(b);
-        source.storePayloadChunk(c);
+        source.storeRendererChunk(a);
+        source.storeRendererChunk(b);
+        source.storeRendererChunk(c);
         vm.stopPrank();
-        assertEq(source.payload(), bytes.concat(a, b, c));
-        assertEq(source.payloadHash(), keccak256(bytes.concat(a, b, c)));
-        assertEq(source.payloadSize(), a.length + b.length + c.length);
+        assertEq(source.renderer(), bytes.concat(a, b, c));
+        assertEq(source.rendererHash(), keccak256(bytes.concat(a, b, c)));
+        assertEq(source.rendererSize(), a.length + b.length + c.length);
     }
 
     /// @dev Non-empty and within one SSTORE2 chunk.

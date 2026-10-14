@@ -79,7 +79,9 @@ interface IBalanceOf {
 }
 
 /// @notice What an ArtifactsPiece needs from THE SOURCE's controller to serve the revealed tokenURI.
-interface IPayloadSource {
-    function payloadChunks() external view returns (address[] memory);
-    function payloadLocked() external view returns (bool);
+/// @notice What THE SOURCE's piece reads from ArtifactsSource: its renderer page and its encrypted seed.
+interface ISourceStore {
+    function rendererChunks() external view returns (address[] memory);
+    function locked() external view returns (bool);
+    function sealedSeed() external view returns (bytes32);
 }

@@ -33,7 +33,7 @@ Owners may do anything with their piece. The security goal is non-owners only.
 **ArtifactsRenderer**
 - An on-chain port of `RULES.md`. It must reproduce the 11 pieces in `reference/framed/` byte for byte, as `reference/check-framed.js` proves for the JavaScript reference.
 - `renderSeal` draws the seal for any piece: the frame and its public traits, with no dots.
-- THE SOURCE is not recomputed on-chain. Before its auction opens the curator stores its finished metadata, encrypted, with SSTORE2 and locks it forever with `keccak256(K)`. Once its owner reveals K, `tokenURI` returns `data:application/json;base64,` plus those bytes decrypted in place, in about 13M gas. It does not animate: R10's shimmer and R11's drift would change the colours of the approved art.
+- THE SOURCE is stored as its seed, never as an image. Before its auction opens the curator stores the renderer page (the rules in an HTML page, ≈12.8 KB) with SSTORE2 and the seed, encrypted, and locks both forever with `keccak256(K)`. Once its owner reveals K, `tokenURI` keeps the seal as its image and adds an `animation_url`: the renderer page plus the seed, which draws THE SOURCE in the viewer's browser, byte for byte. It does not animate: R10's shimmer and R11's drift would change the colours.
 - Editions are never rendered on-chain (R13): owners render them in their browser with the JavaScript port, so a seed never goes to an RPC provider.
 
 ## Keys
@@ -66,14 +66,15 @@ Payment releases when the buyer confirms, or after 72 hours. The buyer can cance
 
 **Plain transfers.** Ordinary ERC-721 transfers stay allowed. The new owner sees only the seal until the previous owner calls `rewrapFor`.
 
-**THE SOURCE.** Under R9 its dot field is keyed by its own secret 256-bit seed, made in the artist's offline ceremony (`tools/source/ceremony.js`) with its content key K. Everything else (composition, palette, drift, frame) is the public study, framed-MASTER.svg. The chain holds only its metadata encrypted: byte j is the plaintext byte XOR byte (j % 32) of keccak256(K ‖ uint256(j / 32)), locked with `keccak256(K)` before the auction.
+**THE SOURCE.** Under R9 its dot field is keyed by its own secret 256-bit seed, made in the artist's offline ceremony (`tools/source/ceremony.js`) with its content key K. Everything else (composition, palette, drift, frame) is the public study, framed-MASTER.svg. The chain holds only its seed, encrypted: `sealedSeed = seed XOR keccak256(K ‖ uint256(0))`, locked with `keccak256(K)` before the auction, and the renderer page that draws it.
 1. After settlement, the winner registers a viewing key on THE SOURCE's contract.
 2. The curator wraps K to it offline (`tools/source/wrap_key.js`) and delivers it once (`ArtifactsSource.deliverKey`), then deletes K.
 3. The owner can view it privately in the browser at any time.
-4. The owner may `reveal(K)`, once and irreversibly: the contract checks K against the commitment and from then on `tokenURI` decrypts the image for everyone. Later owners receive K from the owner before them, as with every piece.
+4. The owner may `reveal(K)`, once and irreversibly: the contract checks K against the commitment, the seed becomes public, and from then on `tokenURI` serves the page that draws it for everyone. Later owners receive K from the owner before them, as with every piece.
 
 ## Disclose to buyers (consequences of the rules as written)
 - **R9:** THE SOURCE's composition is public (the study, framed-MASTER.svg); only its dot field is secret. Before it is revealed, the artist and the curator (who made and delivered K) and its owner can see it.
+- **Marketplaces:** after the reveal, a marketplace's grid shows the seal; the piece's own page runs the renderer page and shows THE SOURCE.
 - **R1:** each edition's image depends on a 32-bit render key. Someone willing to run the renderer for many keys can look for one that matches an edition's public traits.
 - SEED-SECURITY-SPEC already says not to market "only one person can ever see it".
 

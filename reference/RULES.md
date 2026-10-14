@@ -12,6 +12,8 @@ The algorithm is public; the seed is the only secret. Output is a pure function 
 The seed is folded to a 32-bit render key: key = (seed * 2654435761) >>> 0.
 
 ## R2 · RNG (locked)
+Sine and arc tangent (R6, R7, R9) are the correctly rounded IEEE-754 doubles of the true values, computed exactly in rules.js with BigInt, never a platform's Math.sin / Math.atan2 (V8's differ in the last bit on ~3% / ~18% of inputs). Every engine and language then draws the same bytes; all reference pieces rebuild unchanged.
+
 mulberry32(a) — the only PRNG. Three independent, position-addressed streams per cell:
 
 ```
@@ -85,7 +87,7 @@ Baked into the render output. OS-window:
 ## R9 · THE SOURCE (master) — the exceptions
 - t = nx·0.6 + ny·0.4 (full-prism diagonal); stops = PRISM 9-stop, positions [0,⅛,…,1].
 - Drift fixed: amp=8, f1=.07, f2=.03, p1=1.3, p2=3.9; tt uses dr·0.004.
-- Noise/density streams keyed from two secret 32-bit words, n1 and n2 in place of 7777 / 7778: the low two words of THE SOURCE's own 256-bit seed, made with a CSPRNG in the offline ceremony and never published. The approved study (`framed-MASTER.svg`) uses 7777 / 7778 and is public; THE SOURCE shares its composition, palette, drift and frame, and only its dot field is secret. Its finished metadata is stored on-chain encrypted (PROTOCOL.md).
+- Noise/density streams keyed from two secret 32-bit words, n1 and n2 in place of 7777 / 7778: the low two words of THE SOURCE's own 256-bit seed, made with a CSPRNG in the offline ceremony and never published. The approved study (`framed-MASTER.svg`) uses 7777 / 7778 and is public; THE SOURCE shares its composition, palette, drift and frame, and only its dot field is secret. The chain stores its seed, encrypted, never its image (PROTOCOL.md).
 - Density 0.7; radius cw·(0.08 + vibr·0.2); clamps s∈[58,95], l∈[36,66].
 - Frame: title ARTIFACTS ◆ MASTER, menu File View **Reveal**, status THE SOURCE · FIDELITY · MAX · 1/1.
 - Carries a one-time reveal: its owner publishes its content key, and it becomes public — the only piece that can.

@@ -143,10 +143,10 @@ contract AuctionHandler is Test {
     function payloadStaysLocked(uint256 seed) external {
         vm.prank(curator);
         vm.expectRevert(ArtifactsSource.IsLocked.selector);
-        source.storePayloadChunk(abi.encodePacked(seed));
+        source.storeRendererChunk(abi.encodePacked(seed));
         vm.prank(curator);
         vm.expectRevert(ArtifactsSource.IsLocked.selector);
-        source.resetPayload();
+        source.resetRenderer();
     }
 
     function recordHigh() external {
@@ -166,8 +166,8 @@ contract SourceAuctionInvariantTest is Fixture {
     function setUp() public override {
         super.setUp();
         vm.startPrank(curator);
-        source.storePayloadChunk("payload");
-        source.lockPayload(SOURCE_COMMITMENT);
+        source.storeRendererChunk("payload");
+        source.lock(SEALED_SEED, SOURCE_COMMITMENT);
         source.setAuction(1 ether, uint64(vm.getBlockTimestamp() + 1 hours));
         vm.stopPrank();
         address[] memory actors = new address[](4);
@@ -211,6 +211,6 @@ contract SourceAuctionInvariantTest is Fixture {
     function invariant_highBidMonotone() public view {
         assertGe(source.highBid(), h.lastHigh());
         if (source.highBidder() != address(0)) assertGe(source.highBid(), source.reserve());
-        assertTrue(source.payloadLocked());
+        assertTrue(source.locked());
     }
 }

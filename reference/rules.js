@@ -26,11 +26,41 @@ function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; le
 const low32 = (seed) => Number(BigInt(seed) & 0xffffffffn);
 const mix = (s, a, x, b, y, c) => (Math.imul(s, a) + Math.imul(x, b) + Math.imul(y, c)) >>> 0;
 
+// R2: sine and arc tangent are the correctly rounded doubles of the true values, computed exactly with BigInt.
+// A platform's Math.sin / Math.atan2 may differ in the last bit (V8's do, on ~3% / ~18% of inputs), which could
+// move a dot in another engine; these give the same bits everywhere, in any language.
+const FB = 192n, F1 = 1n << FB;
+const atanInvFix = (n, bits) => { let s = 0n, t = (1n << bits) / n, k = 1n, g = 1n; const n2 = n * n; while (t) { s += g * (t / k); t /= n2; k += 2n; g = -g; } return s; };
+const PI_F = (16n * atanInvFix(5n, FB + 64n) - 4n * atanInvFix(239n, FB + 64n)) >> 64n, HALF_PI_F = PI_F / 2n;
+const F64 = new Float64Array(1), U64 = new BigUint64Array(F64.buffer);
+function toFix(x) { F64[0] = x; const b = U64[0], ex = Number((b >> 52n) & 0x7ffn); let m = b & 0xfffffffffffffn, e = -1074; if (ex) { m |= 1n << 52n; e = ex - 1075; } const sh = BigInt(e) + FB, v = sh >= 0n ? m << sh : m >> -sh; return b >> 63n ? -v : v; }
+function toF64(v) { if (!v) return 0; const neg = v < 0n; if (neg) v = -v; let sh = v.toString(2).length - 53, m; if (sh > 0) { const s = BigInt(sh), r = v & ((1n << s) - 1n), h = 1n << (s - 1n); m = v >> s; if (r > h || (r === h && (m & 1n))) m += 1n; } else { m = v << BigInt(-sh); sh = 0; } const r = Number(m) * 2 ** (sh - Number(FB)); return neg ? -r : r; }
+const mulF = (a, b) => (a * b) >> FB;
+function sin(x) {
+  if (!x || !Number.isFinite(x)) return Number.isFinite(x) ? x : NaN;
+  const X = toFix(x), d = 2n * HALF_PI_F, n = 2n * X + HALF_PI_F;
+  let k = n / d; if (n < 0n && n % d) k -= 1n;
+  const r = X - k * HALF_PI_F, r2 = mulF(r, r);
+  let s = r, t = r, i = 1n; for (;;) { t = -mulF(t, r2) / ((i + 1n) * (i + 2n)); if (!t) break; s += t; i += 2n; }
+  let c = F1; t = F1; i = 0n; for (;;) { t = -mulF(t, r2) / ((i + 1n) * (i + 2n)); if (!t) break; c += t; i += 2n; }
+  const q = ((k % 4n) + 4n) % 4n;
+  return toF64(q === 0n ? s : q === 1n ? c : q === 2n ? -s : -c);
+}
+function sqrtF(a) { const n = a << FB; let x = 1n << BigInt(Math.ceil(n.toString(2).length / 2) + 1); for (;;) { const y = (x + n / x) >> 1n; if (y >= x) return x; x = y; } }
+function atanF(z) { let h = 0n; while ((z < 0n ? -z : z) > F1 / 8n) { z = (z << FB) / (F1 + sqrtF(F1 + mulF(z, z))); h += 1n; } const z2 = mulF(z, z); let s = z, t = z, k = 1n; for (;;) { t = -mulF(t, z2); const u = t / (k + 2n); if (!u) break; s += u; k += 2n; } return s << h; }
+function atan2(y, x) {
+  if (Number.isNaN(y) || Number.isNaN(x) || (y === 0 && x === 0) || !Number.isFinite(y) || !Number.isFinite(x)) return Math.atan2(y, x); // exact cases only
+  const Y = toFix(y), X = toFix(x), ay = Y < 0n ? -Y : Y, ax = X < 0n ? -X : X;
+  let a = ay <= ax ? atanF((ay << FB) / ax) : HALF_PI_F - atanF((ax << FB) / ay);
+  if (X < 0n) a = PI_F - a;
+  return toF64(Y < 0n ? -a : a);
+}
+
 const ss = (t) => t * t * (3 - 2 * t);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 function reduceStops(s, k) { if (k >= s.length) return s; if (k <= 1) return [s[0]]; const o = []; for (let i = 0; i < k; i++) o.push(s[Math.round(i * (s.length - 1) / (k - 1))]); return o; }
 function grad(st, t, pos) { const n = st.length; if (t <= pos[0]) return st[0]; if (t >= pos[n - 1]) return st[n - 1]; for (let i = 0; i < n - 1; i++) { if (t >= pos[i] && t <= pos[i + 1]) { const s = ss((t - pos[i]) / (pos[i + 1] - pos[i])); const a = st[i], b = st[i + 1]; let dh = b[0] - a[0]; if (dh > 180) dh -= 360; else if (dh < -180) dh += 360; return [a[0] + dh * s, a[1] + (b[1] - a[1]) * s, a[2] + (b[2] - a[2]) * s]; } } return st[n - 1]; }
-function tForDir(d, nx, ny, cx, cy, rs) { if (d === 0) return ny; if (d === 1) return nx; if (d === 2) return (nx + ny) / 2; if (d === 3) { const dx = nx - cx, dy = ny - cy; return Math.min(1, Math.sqrt(dx * dx + dy * dy) * rs); } if (d === 4) return ((1 - nx) + ny) / 2; if (d === 5) { const a = Math.atan2(ny - cy, nx - cx); return (a + Math.PI) / (2 * Math.PI); } if (d === 6) return Math.min(1, (Math.abs(nx - cx) + Math.abs(ny - cy)) * rs * 1.1); const dx = nx - cx, dy = ny - cy, dd = Math.sqrt(dx * dx + dy * dy), an = (Math.atan2(dy, dx) + Math.PI) / (2 * Math.PI), v = dd * rs * 1.4 + an; return v - Math.floor(v); }
+function tForDir(d, nx, ny, cx, cy, rs) { if (d === 0) return ny; if (d === 1) return nx; if (d === 2) return (nx + ny) / 2; if (d === 3) { const dx = nx - cx, dy = ny - cy; return Math.min(1, Math.sqrt(dx * dx + dy * dy) * rs); } if (d === 4) return ((1 - nx) + ny) / 2; if (d === 5) { const a = atan2(ny - cy, nx - cx); return (a + Math.PI) / (2 * Math.PI); } if (d === 6) return Math.min(1, (Math.abs(nx - cx) + Math.abs(ny - cy)) * rs * 1.1); const dx = nx - cx, dy = ny - cy, dd = Math.sqrt(dx * dx + dy * dy), an = (atan2(dy, dx) + Math.PI) / (2 * Math.PI), v = dd * rs * 1.4 + an; return v - Math.floor(v); }
 
 // The framed sheet (R8), as in artifacts-art/framed.
 const W = 1080, FX = 200, FY = 220, FBW = 680, FBH = 640, GAP = 3.2;
@@ -70,12 +100,12 @@ function dots(seed, master) {
       let t, dr, tt, c;
       if (master) {
         t = nx * 0.6 + ny * 0.4;
-        dr = Math.sin(x * 0.07 + y * 0.05 + 1.3) * 8 + Math.sin(x * 0.03 + y * 0.025 + 3.9) * 8 * 0.6;
+        dr = sin(x * 0.07 + y * 0.05 + 1.3) * 8 + sin(x * 0.03 + y * 0.025 + 3.9) * 8 * 0.6;
         tt = clamp(t + dr * 0.004, 0, 1);
         c = grad(PRISM, tt, [0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1]);
       } else {
         t = tForDir(T.dir, nx, ny, T.cx, T.cy, T.rs); if (T.flip) t = 1 - t;
-        dr = Math.sin(x * T.f1 + y * 0.05 + T.p1) * T.amp + Math.sin(x * T.f2 + y * 0.025 + T.p2) * T.amp * 0.6;
+        dr = sin(x * T.f1 + y * 0.05 + T.p1) * T.amp + sin(x * T.f2 + y * 0.025 + T.p2) * T.amp * 0.6;
         tt = clamp(t + dr * 0.005, 0, 1);
         c = grad(T.stops, tt, T.pos);
       }
@@ -111,4 +141,4 @@ function svg(seed, master) {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${W}" width="${W}" height="${W}"><rect width="${W}" height="${W}" fill="#ffffff"/>${circles}${frame}</svg>`;
 }
 
-module.exports = { dots, traits, svg, masterKeys, DIRS };
+module.exports = { dots, traits, svg, masterKeys, sin, atan2, DIRS };

@@ -7,13 +7,13 @@ import {SSTORE2} from "./libs/SSTORE2.sol";
 import {Clones} from "./libs/Clones.sol";
 import {IArtHouse, IArtifactsPiece, Traits} from "./interfaces/Interfaces.sol";
 
-/// @notice THE SOURCE (ARTIFACTS piece 256): stores its metadata encrypted with SSTORE2, locks it forever with a
-/// commitment to its content key, and sells the single lot by an ascending ETH auction whose proceeds go through the
-/// Proof House ledger. The curator delivers the key to the winner once, wrapped to their viewing key; the winner
-/// alone decides whether to reveal it.
+/// @notice THE SOURCE (ARTIFACTS piece 256): stores the rules' renderer page (SSTORE2) and THE SOURCE's seed,
+/// encrypted, locks both forever with a commitment to the seed's key, and sells the single lot by an ascending ETH
+/// auction whose proceeds go through the Proof House ledger. The curator delivers the key to the winner once,
+/// wrapped to their viewing key; the winner alone decides whether to reveal it.
 ///
-/// Encryption: byte j of the stored payload is plaintext byte j XOR byte (j % 32) of keccak256(K ‖ uint256(j / 32)),
-/// with K a random 256-bit key and the commitment keccak256(K). Revealing publishes K; the piece then decrypts.
+/// The seed is stored as seed XOR keccak256(K ‖ uint256(0)), with K a random 256-bit key and the commitment
+/// keccak256(K). Revealing publishes K; the piece then serves the renderer page drawing THE SOURCE from its seed.
 contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard {
     uint256 public constant SOURCE_ID = 256;
     uint256 public constant MIN_RAISE_BPS = 500; // each bid beats the high bid by 5%
@@ -22,11 +22,12 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard {
     IArtHouse public immutable house;
     address public immutable pieceImplementation;
 
-    // ---------- payload ----------
-    address[] private _chunks;
-    uint256 public payloadSize;
-    bool public payloadLocked;
-    bytes32 public keyCommitment; // keccak256(K), K the key that decrypts the stored payload
+    // ---------- the renderer and the sealed seed ----------
+    address[] private _chunks; // the renderer page: ARTIFACTS' rules.js in an HTML page, up to where the seed goes
+    uint256 public rendererSize;
+    bool public locked;
+    bytes32 public sealedSeed; // THE SOURCE's seed XOR keccak256(K ‖ uint256(0))
+    bytes32 public keyCommitment; // keccak256(K)
     bool public keyDelivered; // the curator's one delivery of K to the winner
 
     // ---------- auction ----------
@@ -40,8 +41,8 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard {
     mapping(address => uint256) public refunds;
     address public pieceContract;
 
-    event PayloadChunkStored(uint256 index, address pointer, uint256 size);
-    event PayloadLocked(bytes32 hash, uint256 size, bytes32 keyCommitment);
+    event RendererChunkStored(uint256 index, address pointer, uint256 size);
+    event Locked(bytes32 rendererHash, uint256 rendererSize, bytes32 sealedSeed, bytes32 keyCommitment);
     event KeyDelivered(address indexed owner);
     event AuctionSet(uint256 reserve, uint64 endTime);
     event Bid(address indexed bidder, address indexed broker, uint256 amount, uint64 endTime);
@@ -50,7 +51,7 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard {
 
     error IsLocked();
     error NotLocked();
-    error EmptyPayload();
+    error EmptyRenderer();
     error AuctionLive();
     error AuctionNotOpen();
     error AuctionEnded();
@@ -71,40 +72,42 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard {
         pieceImplementation = pieceImplementation_;
     }
 
-    // ---------- payload (the encrypted bytes of THE SOURCE's base64 metadata, from the offline ceremony) ----------
+    // ---------- the renderer and the sealed seed (from the artist's offline ceremony) ----------
 
-    function storePayloadChunk(bytes calldata data) external onlyOwner {
-        if (payloadLocked) revert IsLocked();
-        if (data.length == 0) revert EmptyPayload();
+    function storeRendererChunk(bytes calldata data) external onlyOwner {
+        if (locked) revert IsLocked();
+        if (data.length == 0) revert EmptyRenderer();
         address ptr = SSTORE2.write(data);
         _chunks.push(ptr);
-        payloadSize += data.length;
-        emit PayloadChunkStored(_chunks.length - 1, ptr, data.length);
+        rendererSize += data.length;
+        emit RendererChunkStored(_chunks.length - 1, ptr, data.length);
     }
 
     /// @notice Drops every stored chunk so the upload can start over (only while unlocked).
-    function resetPayload() external onlyOwner {
-        if (payloadLocked) revert IsLocked();
+    function resetRenderer() external onlyOwner {
+        if (locked) revert IsLocked();
         delete _chunks;
-        payloadSize = 0;
+        rendererSize = 0;
     }
 
-    /// @notice Locks the stored ciphertext forever, with the commitment keccak256(K) to the key that decrypts it.
-    function lockPayload(bytes32 keyCommitment_) external onlyOwner {
-        if (payloadLocked) revert IsLocked();
-        if (_chunks.length == 0) revert EmptyPayload();
+    /// @notice Locks the renderer and THE SOURCE's sealed seed forever, with the commitment keccak256(K) to the key
+    /// that opens the seed.
+    function lock(bytes32 sealedSeed_, bytes32 keyCommitment_) external onlyOwner {
+        if (locked) revert IsLocked();
+        if (_chunks.length == 0) revert EmptyRenderer();
         if (keyCommitment_ == bytes32(0)) revert NoCommitment();
-        payloadLocked = true;
+        locked = true;
+        sealedSeed = sealedSeed_;
         keyCommitment = keyCommitment_;
-        emit PayloadLocked(payloadHash(), payloadSize, keyCommitment_);
+        emit Locked(rendererHash(), rendererSize, sealedSeed_, keyCommitment_);
     }
 
-    function payloadChunks() external view returns (address[] memory) {
+    function rendererChunks() external view returns (address[] memory) {
         return _chunks;
     }
 
-    function payload() public view returns (bytes memory data) {
-        data = new bytes(payloadSize);
+    function renderer() public view returns (bytes memory data) {
+        data = new bytes(rendererSize);
         uint256 offset;
         for (uint256 i; i < _chunks.length; ++i) {
             uint256 dest;
@@ -115,9 +118,8 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard {
         }
     }
 
-    /// @notice keccak256 of the stored (encrypted) payload.
-    function payloadHash() public view returns (bytes32) {
-        return keccak256(payload());
+    function rendererHash() public view returns (bytes32) {
+        return keccak256(renderer());
     }
 
     // ---------- the key ----------
@@ -136,9 +138,9 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard {
 
     // ---------- auction ----------
 
-    /// @notice Opens (or re-opens, if no bid came) the single-lot auction. Needs the locked payload.
+    /// @notice Opens (or re-opens, if no bid came) the single-lot auction. Needs the renderer and seed locked.
     function setAuction(uint256 reserve_, uint64 endTime_) external onlyOwner {
-        if (!payloadLocked) revert NotLocked();
+        if (!locked) revert NotLocked();
         if (settled) revert AlreadySettled();
         if (highBidder != address(0)) revert AuctionLive();
         if (endTime_ <= block.timestamp) revert BadEndTime();

@@ -10,18 +10,14 @@ import {Base64Decode} from "./utils/Base64Decode.sol";
 contract ArtifactsSourceTest is Fixture {
     uint256 internal constant CHUNK = 24_000;
     /// @dev What the revealed tokenURI must fit in, so public RPCs can serve it to marketplaces.
-    uint256 internal constant TOKENURI_GAS_CAP = 14_000_000;
+    uint256 internal constant TOKENURI_GAS_CAP = 3_000_000;
 
-    /// @dev Stores the reference payload encrypted with the test key, as the ceremony's output would be stored.
-    function _storePayload() internal returns (bytes memory payload, bytes memory sealedPayload) {
-        payload = bytes(vm.readFile("reference/the-source.payload.b64"));
-        sealedPayload = _sourceCipher(payload, SOURCE_KEY);
+    /// @dev Stores the renderer page (as the ceremony writes it) and locks it with the test seed, sealed.
+    function _storeSource() internal returns (bytes memory page) {
+        page = bytes(vm.readFile("reference/the-source.renderer.html"));
         vm.startPrank(curator);
-        for (uint256 off; off < sealedPayload.length; off += CHUNK) {
-            uint256 end = off + CHUNK > sealedPayload.length ? sealedPayload.length : off + CHUNK;
-            source.storePayloadChunk(Base64Decode.slice(sealedPayload, off, end));
-        }
-        source.lockPayload(SOURCE_COMMITMENT);
+        source.storeRendererChunk(page);
+        source.lock(SEALED_SEED, SOURCE_COMMITMENT);
         vm.stopPrank();
     }
 
@@ -34,37 +30,37 @@ contract ArtifactsSourceTest is Fixture {
         piece = ArtifactsPiece(source.settle());
     }
 
-    function test_auctionNeedsLockedPayload() public {
+    function test_auctionNeedsTheSourceLocked() public {
         vm.prank(curator);
         vm.expectRevert(ArtifactsSource.NotLocked.selector);
         source.setAuction(1 ether, uint64(vm.getBlockTimestamp() + 1 days));
         vm.prank(alice);
         vm.expectRevert(TwoStepOwnable.NotOwner.selector);
-        source.storePayloadChunk("x");
+        source.storeRendererChunk("x");
         vm.startPrank(curator);
-        vm.expectRevert(ArtifactsSource.EmptyPayload.selector);
-        source.lockPayload(SOURCE_COMMITMENT);
-        source.storePayloadChunk("abc");
+        vm.expectRevert(ArtifactsSource.EmptyRenderer.selector);
+        source.lock(SEALED_SEED, SOURCE_COMMITMENT);
+        source.storeRendererChunk("abc");
         vm.expectRevert(ArtifactsSource.NoCommitment.selector);
-        source.lockPayload(bytes32(0));
-        source.resetPayload();
-        source.storePayloadChunk("abcd");
-        source.lockPayload(SOURCE_COMMITMENT);
+        source.lock(SEALED_SEED, bytes32(0));
+        source.resetRenderer();
+        source.storeRendererChunk("abcd");
+        source.lock(SEALED_SEED, SOURCE_COMMITMENT);
         vm.expectRevert(ArtifactsSource.IsLocked.selector);
-        source.storePayloadChunk("more");
+        source.storeRendererChunk("more");
         vm.expectRevert(ArtifactsSource.IsLocked.selector);
-        source.resetPayload();
+        source.resetRenderer();
         vm.stopPrank();
-        assertEq(source.payloadHash(), keccak256("abcd"));
-        assertEq(source.payloadSize(), 4);
+        assertEq(source.rendererHash(), keccak256("abcd"));
+        assertEq(source.rendererSize(), 4);
         assertEq(source.keyCommitment(), SOURCE_COMMITMENT);
     }
 
     /// @dev The 5% raise rounds up, so even dust-sized bids must strictly exceed the high bid.
     function test_tinyBidsMustStrictlyExceed() public {
         vm.startPrank(curator);
-        source.storePayloadChunk("x");
-        source.lockPayload(SOURCE_COMMITMENT);
+        source.storeRendererChunk("x");
+        source.lock(SEALED_SEED, SOURCE_COMMITMENT);
         source.setAuction(1, uint64(vm.getBlockTimestamp() + 1 hours));
         vm.stopPrank();
         vm.prank(alice);
@@ -93,9 +89,9 @@ contract ArtifactsSourceTest is Fixture {
 
     function test_auctionRules() public {
         vm.prank(curator);
-        source.storePayloadChunk("payload");
+        source.storeRendererChunk("payload");
         vm.prank(curator);
-        source.lockPayload(SOURCE_COMMITMENT);
+        source.lock(SEALED_SEED, SOURCE_COMMITMENT);
         vm.prank(alice);
         vm.expectRevert(ArtifactsSource.AuctionNotOpen.selector);
         source.bid{value: 1 ether}(address(0));
@@ -158,9 +154,9 @@ contract ArtifactsSourceTest is Fixture {
 
     function test_auctionReopensWhenNoBids() public {
         vm.prank(curator);
-        source.storePayloadChunk("payload");
+        source.storeRendererChunk("payload");
         vm.prank(curator);
-        source.lockPayload(SOURCE_COMMITMENT);
+        source.lock(SEALED_SEED, SOURCE_COMMITMENT);
         vm.prank(curator);
         source.setAuction(1 ether, uint64(vm.getBlockTimestamp() + 1 hours));
         vm.warp(vm.getBlockTimestamp() + 2 hours);
@@ -171,33 +167,34 @@ contract ArtifactsSourceTest is Fixture {
         assertEq(source.reserve(), 0.5 ether);
     }
 
-    function test_storedPayloadIsUnreadableWithoutTheKey() public {
-        (bytes memory payload, bytes memory sealedPayload) = _storePayload();
-        assertEq(source.payloadHash(), keccak256(sealedPayload));
-        assertTrue(keccak256(source.payload()) != keccak256(payload), "stored in the clear");
-        // the plaintext's opening ({"name":" in base64) is not what is stored
-        assertTrue(keccak256(Base64Decode.slice(source.payload(), 0, 12)) != keccak256("eyJuYW1lIjoi"));
-        assertEq(keccak256(Base64Decode.slice(payload, 0, 12)), keccak256("eyJuYW1lIjoi"));
+    function test_storedSeedIsSealed() public {
+        bytes memory page = _storeSource();
+        assertEq(source.rendererHash(), keccak256(page));
+        assertEq(source.sealedSeed(), SEALED_SEED);
+        assertTrue(source.sealedSeed() != SOURCE_SEED, "the seed is stored in the clear");
+        assertEq(source.keyCommitment(), SOURCE_COMMITMENT);
         ArtifactsPiece piece = _runAuction();
         assertEq(piece.commitment(), SOURCE_COMMITMENT, "the piece carries the key commitment");
         assertFalse(piece.revealed());
+        assertEq(piece.revealedSeed(), bytes32(0));
         assertEq(piece.revealKey(), bytes32(0));
     }
 
-    function test_revealPublishesTheKeyAndDecryptsByteForByte() public {
-        (bytes memory payload,) = _storePayload();
+    function test_revealServesTheRendererWithItsSeed() public {
+        bytes memory page = _storeSource();
         ArtifactsPiece piece = _runAuction();
         // sealed until revealed: the R9 frame
         bytes memory sealedUri = bytes(piece.tokenURI(1));
         bytes memory json = Base64Decode.decode(Base64Decode.slice(sealedUri, 29, sealedUri.length));
+        bytes memory expectedSeal;
         {
-            uint256 imgAt = Base64Decode.indexOf(json, bytes("data:image/svg+xml;base64,"), 0) + 26;
-            uint256 imgEnd = Base64Decode.indexOf(json, bytes('"}'), imgAt);
-            bytes memory sealSvg = Base64Decode.decode(Base64Decode.slice(json, imgAt, imgEnd));
+            uint256 sAt = Base64Decode.indexOf(json, bytes("data:image/svg+xml;base64,"), 0) + 26;
+            uint256 sEnd = Base64Decode.indexOf(json, bytes('"}'), sAt);
+            bytes memory sealSvg = Base64Decode.decode(Base64Decode.slice(json, sAt, sEnd));
             bytes memory framed = bytes(vm.readFile("reference/framed/framed-MASTER.svg"));
             uint256 frameAt = Base64Decode.indexOf(framed, bytes('<g fill="#1a1a1a"'), 0);
             uint256 dotsAt = Base64Decode.indexOf(framed, bytes("<circle"), 0);
-            bytes memory expectedSeal =
+            expectedSeal =
                 bytes.concat(Base64Decode.slice(framed, 0, dotsAt), Base64Decode.slice(framed, frameAt, framed.length));
             assertEq(sealSvg, expectedSeal, "THE SOURCE seal differs from R9 frame");
         }
@@ -216,9 +213,9 @@ contract ArtifactsSourceTest is Fixture {
         vm.expectRevert(ArtifactsPiece.AlreadyRevealed.selector);
         piece.reveal(SOURCE_KEY);
         assertTrue(piece.revealed());
-        assertEq(piece.revealKey(), SOURCE_KEY);
+        assertEq(piece.revealedSeed(), SOURCE_SEED, "the key opens the seed");
 
-        // the tokenURI call itself, decryption included (measured without copying the 1.8 MB result back)
+        // the tokenURI call itself, measured without copying the result back
         {
             bytes memory call_ = abi.encodeWithSelector(ArtifactsPiece.tokenURI.selector, 1);
             address target = address(piece);
@@ -230,44 +227,38 @@ contract ArtifactsSourceTest is Fixture {
             emit log_named_uint("revealed tokenURI gas", g - gasleft());
             assertTrue(fits, "revealed tokenURI over the gas cap");
         }
-        (bool ok, bytes memory ret) =
-            address(piece).staticcall(abi.encodeWithSelector(ArtifactsPiece.tokenURI.selector, 1));
-        assertTrue(ok);
-        bytes memory b = bytes(abi.decode(ret, (string)));
-        assertEq(b.length, 29 + payload.length);
-        assertEq(Base64Decode.slice(b, 0, 29), bytes("data:application/json;base64,"));
-        assertEq(keccak256(Base64Decode.slice(b, 29, b.length)), keccak256(payload), "not decrypted byte for byte");
-        // the ABI padding after the string is zero (the last keystream block ran past the end)
-        uint256 padded = (b.length + 31) / 32 * 32;
-        for (uint256 i = 64 + b.length; i < 64 + padded; ++i) {
-            assertEq(uint8(ret[i]), 0, "dirty padding");
-        }
-
-        // decode: JSON -> image data URI -> the reference image byte for byte
-        bytes memory meta = Base64Decode.decode(payload);
-        uint256 at = Base64Decode.indexOf(meta, bytes('"image":"data:image/svg+xml;base64,'), 0) + 35;
+        bytes memory uri = bytes(piece.tokenURI(1));
+        assertEq(Base64Decode.slice(uri, 0, 29), bytes("data:application/json;base64,"));
+        bytes memory meta = Base64Decode.decode(Base64Decode.slice(uri, 29, uri.length));
+        string memory seedHex = vm.toString(SOURCE_SEED);
+        // the page is the stored renderer, then the seed, then the closing the contract adds
+        uint256 at = Base64Decode.indexOf(meta, bytes('"animation_url":"data:text/html;base64,'), 0) + 39;
         uint256 end = Base64Decode.indexOf(meta, bytes('"}'), at);
-        bytes memory svg = Base64Decode.decode(Base64Decode.slice(meta, at, end));
-        bytes memory master = bytes(vm.readFile("reference/framed/framed-MASTER.svg"));
-        assertEq(keccak256(svg), keccak256(master), "image differs");
+        bytes memory shown = Base64Decode.decode(Base64Decode.slice(meta, at, end));
+        assertEq(keccak256(shown), keccak256(bytes.concat(page, bytes(seedHex), bytes(piece.RENDER_SUFFIX()))), "page differs");
+        // the still image stays the seal; the seed is a public attribute; the name holds
+        assertTrue(Base64Decode.indexOf(meta, bytes.concat('"Seed","value":"', bytes(seedHex), '"'), 0) > 0);
+        uint256 imgAt = Base64Decode.indexOf(meta, bytes("data:image/svg+xml;base64,"), 0) + 26;
+        uint256 imgEnd = Base64Decode.indexOf(meta, bytes('","animation_url"'), imgAt);
+        assertEq(Base64Decode.decode(Base64Decode.slice(meta, imgAt, imgEnd)), expectedSeal);
         assertEq(Base64Decode.indexOf(meta, bytes(unicode'"name":"ARTIFACTS · THE SOURCE"'), 0), 1);
     }
 
-    /// @dev Any payload length decrypts exactly, including partial last blocks.
-    function testFuzz_revealDecryptsAnyLength(bytes memory plain, bytes32 key) public {
-        vm.assume(plain.length > 0 && plain.length < 3_000 && key != bytes32(0));
+    /// @dev Any seed and key: the published key opens exactly the seed that was sealed with it.
+    function testFuzz_revealOpensTheSealedSeed(bytes32 seed, bytes32 key) public {
+        vm.assume(key != bytes32(0));
         vm.startPrank(curator);
-        source.storePayloadChunk(_sourceCipher(plain, key));
-        source.lockPayload(keccak256(abi.encodePacked(key)));
+        source.storeRendererChunk("page");
+        source.lock(seed ^ keccak256(abi.encodePacked(key, uint256(0))), keccak256(abi.encodePacked(key)));
         vm.stopPrank();
         ArtifactsPiece piece = _runAuction();
         vm.prank(alice);
         piece.reveal(key);
-        assertEq(bytes(piece.tokenURI(1)), bytes.concat("data:application/json;base64,", plain));
+        assertEq(piece.revealedSeed(), seed);
     }
 
     function test_deliverKeyOnceToTheWinner() public {
-        _storePayload();
+        _storeSource();
         vm.prank(curator);
         vm.expectRevert(ArtifactsSource.NotSettled.selector);
         source.deliverKey("wrapped");
@@ -303,7 +294,7 @@ contract ArtifactsSourceTest is Fixture {
     }
 
     function test_noRevealWhileABuyerIsInEscrow() public {
-        _storePayload();
+        _storeSource();
         ArtifactsPiece piece = _runAuction();
         vm.prank(alice);
         piece.list(2 ether);
@@ -321,9 +312,9 @@ contract ArtifactsSourceTest is Fixture {
 
     function test_bidReentrancyAndRefundPull() public {
         vm.prank(curator);
-        source.storePayloadChunk("payload");
+        source.storeRendererChunk("payload");
         vm.prank(curator);
-        source.lockPayload(SOURCE_COMMITMENT);
+        source.lock(SEALED_SEED, SOURCE_COMMITMENT);
         vm.prank(curator);
         source.setAuction(1 ether, uint64(vm.getBlockTimestamp() + 1 hours));
         // a bidder that reverts on receive cannot block the auction: refunds are pull

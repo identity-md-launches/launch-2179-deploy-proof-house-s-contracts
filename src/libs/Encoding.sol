@@ -36,6 +36,21 @@ library Encoding {
         return result;
     }
 
+    /// @notice "0x" followed by the 64 lowercase hex digits of `value`.
+    function toHexString(bytes32 value) internal pure returns (string memory) {
+        bytes memory out = new bytes(66);
+        out[0] = "0";
+        out[1] = "x";
+        for (uint256 i; i < 32; ++i) {
+            uint8 b = uint8(value[i]);
+            out[2 + 2 * i] = _HEX[b >> 4];
+            out[3 + 2 * i] = _HEX[b & 0x0f];
+        }
+        return string(out);
+    }
+
+    bytes16 private constant _HEX = "0123456789abcdef";
+
     function toString(uint256 value) internal pure returns (string memory) {
         if (value == 0) return "0";
         uint256 temp = value;

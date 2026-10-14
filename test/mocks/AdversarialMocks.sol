@@ -117,14 +117,18 @@ contract ReenteringReceiver {
 
 /// @dev Minimal controller for a hand-initialised piece clone (to reach paths ArtifactsSource never exposes).
 contract StubController {
-    bool public payloadLocked;
+    bool public locked;
     address[] internal chunks;
 
     function setLocked(bool v) external {
-        payloadLocked = v;
+        locked = v;
     }
 
-    function payloadChunks() external view returns (address[] memory) {
+    function rendererChunks() external view returns (address[] memory) {
         return chunks;
+    }
+
+    function sealedSeed() external pure returns (bytes32) {
+        return bytes32(0);
     }
 }
