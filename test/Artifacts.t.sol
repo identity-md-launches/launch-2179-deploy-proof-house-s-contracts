@@ -124,6 +124,26 @@ contract ArtifactsFactoryTest is Fixture {
         factory.rawFulfillRandomWords(1, new uint256[](1));
     }
 
+    function test_vrfCallbackGasIsTheCuratorsToTune() public {
+        assertEq(factory.vrfCallbackGas(), 1_000_000);
+        vm.prank(alice);
+        vm.expectRevert(TwoStepOwnable.NotOwner.selector);
+        factory.setVRFCallbackGas(500_000);
+        vm.startPrank(curator);
+        vm.expectRevert(ArtifactsFactory.BadCallbackGas.selector);
+        factory.setVRFCallbackGas(149_999);
+        vm.expectRevert(ArtifactsFactory.BadCallbackGas.selector);
+        factory.setVRFCallbackGas(2_500_001);
+        factory.setVRFCallbackGas(700_000);
+        vm.stopPrank();
+        _publishAll();
+        _openSale(1 ether);
+        vm.prank(alice);
+        factory.buy{value: 1 ether}(address(0));
+        (,,, uint32 gas,,) = vrf.lastRequest();
+        assertEq(gas, 700_000, "requests carry the curator's setting");
+    }
+
     function test_buyMany_fivePerWallet() public {
         _publishAll();
         _openSale(1 ether);
@@ -228,7 +248,7 @@ contract ArtifactsFactoryTest is Fixture {
         (bytes32 keyHash, uint256 subId,, uint32 gas, uint32 numWords,) = vrf.lastRequest();
         assertEq(keyHash, KEY_HASH);
         assertEq(subId, SUB_ID);
-        assertEq(gas, factory.VRF_CALLBACK_GAS());
+        assertEq(gas, factory.vrfCallbackGas());
         assertEq(numWords, 1);
         vrf.fulfill(id, 5);
         assertEq(factory.requestEdition(id), 6);

@@ -53,11 +53,14 @@ no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH lea
 
 ## ARTIFACTS flow
 
-- **Buy an edition**: `ArtifactsFactory.buy{value: price}(broker)`. State is written, the ETH goes to
+- **Buy editions**: `ArtifactsFactory.buyMany{value: price × n}(n, broker)` (1–5; five per wallet in all, `mintedBy`,
+  `allowanceOf`) or `buy{value: price}(broker)` for one. State is written, the ETH goes to
   `ArtHouse.recordSale` (credits written before any transfer), then a VRF v2.5 request is made. The callback
   `rawFulfillRandomWords` (coordinator only) assigns a uniformly random unassigned edition by a lazy
-  Fisher-Yates over 1..255: none twice, none skipped (tested over all 255 purchases). If the coordinator never
-  answers a request (Chainlink drops requests an underfunded subscription cannot pay within ~24h), the curator
+  Fisher-Yates over 1..255: none twice, none skipped (tested over all 255 purchases). Its gas limit is
+  `vrfCallbackGas` (default 1,000,000; the curator sets 150k–2.5M with `setVRFCallbackGas`): one assignment cost
+  ≈150k gas under today's mainnet pricing and ≈670k under Glamsterdam's state repricing (measured on Sepolia, where
+  250k made every callback fail). If a callback fails or never comes, the curator
   may `rerequestRandomness(requestId)` once `VRF_RETRY_BLOCKS` have passed: the old id is forgotten (a late
   answer to it is rejected), a new request carries the same buyer, and the purchase still yields exactly one
   edition. Watch `sold` vs `assigned` and the `Purchased`/`EditionAssigned`/`Rerequested` events.
@@ -113,9 +116,10 @@ current owner. Every piece pays a 7.5% ERC-2981 royalty to its artist's payout a
 
 | Constant | Value | Where |
 |----------|-------|-------|
-| `VRF_CALLBACK_GAS` | 250,000 | ArtifactsFactory |
+| `vrfCallbackGas` (curator-set) | 1,000,000 default, 150,000–2,500,000 | ArtifactsFactory |
+| `MAX_PER_WALLET` | 5 | ArtifactsFactory |
 | `VRF_CONFIRMATIONS` | 3 | ArtifactsFactory |
-| `VRF_RETRY_BLOCKS` | 7,200 (~24 h at 12 s blocks) | ArtifactsFactory |
+| `VRF_RETRY_BLOCKS` | 600 (~2 h at 12 s blocks) | ArtifactsFactory |
 | `MIN_RAISE_BPS` | 500 (5%) | ArtifactsSource |
 | `EXTENSION` | 10 minutes | ArtifactsSource |
 | `ESCROW_TIMEOUT` | 72 hours | ArtifactsPiece |
@@ -133,6 +137,9 @@ current owner. Every piece pays a 7.5% ERC-2981 royalty to its artist's payout a
   are pending (e.g. before THE SOURCE settles). This is an owner power by design, not a bypass; bidders trust the
   curator not to redirect the artist's or broker's share after the fact.
 - Chainlink VRF is the only randomness; the subscription must stay funded or purchases revert at request time.
+  Chainlink only answers while the subscription holds a request's maximum cost: `vrfCallbackGas` plus overhead at
+  the key hash's maximum gas price, plus its premium (e.g. ≈0.5 ETH at 1M gas on Sepolia's 500 gwei lane). The draw
+  itself is charged at the real gas price.
   A purchase whose callback never arrives keeps the buyer's payment in the ledger with no edition until the
   curator calls `rerequestRandomness` (above); only the curator can, so the buyer relies on the curator doing so.
   The mock coordinator in tests is not production randomness.

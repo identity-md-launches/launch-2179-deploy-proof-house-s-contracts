@@ -13,11 +13,16 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard {
     uint256 public constant EDITIONS = 255;
     /// @notice Most editions one wallet can buy, across all its purchases.
     uint256 public constant MAX_PER_WALLET = 5;
-    uint32 public constant VRF_CALLBACK_GAS = 250_000;
+    /// @notice Bounds for the VRF callback's gas limit. One assignment writes a handful of new storage slots, whose
+    /// price changes with Ethereum's upgrades (≈150k gas before Glamsterdam's repricing, ≈670k after, as measured on
+    /// Sepolia), so the curator can set it; Chainlink charges the gas actually used, not the limit.
+    uint32 public constant VRF_CALLBACK_GAS_MIN = 150_000;
+    uint32 public constant VRF_CALLBACK_GAS_MAX = 2_500_000; // Chainlink's maximum
     uint16 public constant VRF_CONFIRMATIONS = 3;
-    /// @dev Blocks a VRF request may stay unfulfilled before the curator can re-request it (~24h at 12s blocks,
-    /// Chainlink's own retry window for an underfunded subscription).
-    uint256 public constant VRF_RETRY_BLOCKS = 7_200;
+    /// @dev Blocks a VRF request may stay unfulfilled before the curator can re-request it (~2h at 12s blocks). A
+    /// callback that failed (e.g. out of gas) is dead at once; a request Chainlink still holds (an underfunded
+    /// subscription) may also answer later, but its old id is forgotten, so that late answer is refused.
+    uint256 public constant VRF_RETRY_BLOCKS = 600;
 
     IArtHouse public immutable house;
     address public immutable pieceImplementation;
@@ -46,6 +51,7 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard {
     bytes32 public vrfKeyHash;
     uint256 public vrfSubscriptionId;
     bool public vrfNativePayment;
+    uint32 public vrfCallbackGas = 1_000_000;
 
     mapping(uint256 => address) public requestBuyer;
     mapping(uint256 => uint256) public requestEdition;
@@ -66,6 +72,7 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard {
     event PriceSet(uint256 price);
     event SaleOpenSet(bool open);
     event VRFConfigured(address coordinator, bytes32 keyHash, uint256 subscriptionId, bool nativePayment);
+    event VRFCallbackGasSet(uint32 gas);
     event Purchased(address indexed buyer, address indexed broker, uint256 requestId, uint256 price);
     event EditionAssigned(uint256 indexed edition, address indexed buyer, uint256 requestId);
     event Rerequested(uint256 indexed oldRequestId, uint256 indexed newRequestId, address indexed buyer);
@@ -83,6 +90,7 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard {
     error SoldOut();
     error VRFNotConfigured();
     error VRFAlreadyConfigured();
+    error BadCallbackGas();
     error NotCoordinator();
     error UnknownRequest();
     error NotAssigned();
@@ -163,6 +171,14 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard {
         emit VRFConfigured(coordinator, keyHash, subscriptionId, nativePayment);
     }
 
+    /// @notice The gas Chainlink gives each draw's callback. Raise it if Ethereum reprices storage (a callback that
+    /// runs out fails, and the draw must be re-requested); lower it to need a smaller subscription minimum.
+    function setVRFCallbackGas(uint32 gas) external onlyOwner {
+        if (gas < VRF_CALLBACK_GAS_MIN || gas > VRF_CALLBACK_GAS_MAX) revert BadCallbackGas();
+        vrfCallbackGas = gas;
+        emit VRFCallbackGasSet(gas);
+    }
+
     // ---------- buying ----------
 
     /// @notice Pay exactly `price` in ETH for one edition; the sale is recorded in the ledger and a VRF request
@@ -219,7 +235,7 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard {
                 keyHash: vrfKeyHash,
                 subId: vrfSubscriptionId,
                 requestConfirmations: VRF_CONFIRMATIONS,
-                callbackGasLimit: VRF_CALLBACK_GAS,
+                callbackGasLimit: vrfCallbackGas,
                 numWords: 1,
                 extraArgs: abi.encodeWithSelector(bytes4(keccak256("VRF ExtraArgsV1")), vrfNativePayment)
             })
