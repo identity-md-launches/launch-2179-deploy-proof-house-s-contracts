@@ -91,6 +91,7 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard {
     error VRFNotConfigured();
     error VRFAlreadyConfigured();
     error BadCallbackGas();
+    error LengthMismatch();
     error NotCoordinator();
     error UnknownRequest();
     error NotAssigned();
@@ -274,6 +275,19 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard {
 
     /// @notice Curator posts K wrapped to the buyer's registered viewing key.
     function postWrappedKey(uint256 edition, bytes calldata wrapped) external onlyOwner {
+        _postWrappedKey(edition, wrapped);
+    }
+
+    /// @notice The same for many editions in one transaction: the curator's offline batch (tools/editions). All or
+    /// nothing, so a batch built from a stale list fails whole rather than half-posted.
+    function postWrappedKeys(uint256[] calldata editions, bytes[] calldata wrapped) external onlyOwner {
+        if (editions.length != wrapped.length || editions.length == 0) revert LengthMismatch();
+        for (uint256 i; i < editions.length; ++i) {
+            _postWrappedKey(editions[i], wrapped[i]);
+        }
+    }
+
+    function _postWrappedKey(uint256 edition, bytes calldata wrapped) private {
         address buyer = editionBuyer[edition];
         if (buyer == address(0)) revert NotAssigned();
         if (pieceContract[edition] != address(0)) revert AlreadyClaimed();

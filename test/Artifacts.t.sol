@@ -124,6 +124,44 @@ contract ArtifactsFactoryTest is Fixture {
         factory.rawFulfillRandomWords(1, new uint256[](1));
     }
 
+    function test_postWrappedKeysInOneBatch() public {
+        _publishAll();
+        _openSale(1 ether);
+        uint256 a = _buyAndAssign(alice, address(0), 1);
+        uint256 b = _buyAndAssign(bob, address(0), 2);
+        uint256[] memory eds = new uint256[](2);
+        bytes[] memory keys = new bytes[](2);
+        (eds[0], eds[1]) = (a, b);
+        (keys[0], keys[1]) = (bytes("wrapped-a"), bytes("wrapped-b"));
+        // every buyer in the batch needs a viewing key, or the whole batch fails
+        vm.prank(alice);
+        factory.registerViewingKey(keccak256("alice vk"));
+        vm.prank(curator);
+        vm.expectRevert(ArtifactsFactory.NoViewingKey.selector);
+        factory.postWrappedKeys(eds, keys);
+        assertEq(factory.wrappedKeyOf(a).length, 0, "nothing half-posted");
+        vm.prank(bob);
+        factory.registerViewingKey(keccak256("bob vk"));
+        // only the curator, with matching lists
+        vm.prank(alice);
+        vm.expectRevert(TwoStepOwnable.NotOwner.selector);
+        factory.postWrappedKeys(eds, keys);
+        vm.startPrank(curator);
+        vm.expectRevert(ArtifactsFactory.LengthMismatch.selector);
+        factory.postWrappedKeys(eds, new bytes[](1));
+        vm.expectRevert(ArtifactsFactory.LengthMismatch.selector);
+        factory.postWrappedKeys(new uint256[](0), new bytes[](0));
+        factory.postWrappedKeys(eds, keys);
+        vm.stopPrank();
+        assertEq(factory.wrappedKeyOf(a), bytes("wrapped-a"));
+        assertEq(factory.wrappedKeyOf(b), bytes("wrapped-b"));
+        // and each buyer can claim with their key
+        vm.prank(bob);
+        ArtifactsPiece piece = ArtifactsPiece(factory.claim(b));
+        assertEq(piece.wrappedKey(), bytes("wrapped-b"));
+        assertEq(piece.ownerOf(1), bob);
+    }
+
     function test_vrfCallbackGasIsTheCuratorsToTune() public {
         assertEq(factory.vrfCallbackGas(), 1_000_000);
         vm.prank(alice);
