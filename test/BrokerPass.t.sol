@@ -251,7 +251,7 @@ contract BrokerPassTest is Fixture {
     function _sellSource(address winner, address broker_, uint256 amount) internal {
         vm.startPrank(curator);
         source.storePayloadChunk("payload");
-        source.lockPayload();
+        source.lockPayload(SOURCE_COMMITMENT);
         source.setAuction(amount, uint64(block.timestamp + 1 days));
         vm.stopPrank();
         vm.prank(winner);

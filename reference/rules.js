@@ -53,10 +53,18 @@ function traits(seed) {
   return { s, pal, title, k, stops, pos, dir, cx, cy, rs, flip, amp, f1, f2, p1, p2, baseD };
 }
 
+// R9: THE SOURCE's noise and density streams are keyed by two 32-bit words. Seed 0 is the published study
+// (7777 / 7778); THE SOURCE itself takes the low two 32-bit words of a secret 256-bit seed from the offline ceremony.
+function masterKeys(seed) {
+  const s = BigInt(seed || 0);
+  return s === 0n ? [7777, 7778] : [Number(s & 0xffffffffn), Number((s >> 32n) & 0xffffffffn)];
+}
+
 // R7 (editions) and R9 (THE SOURCE): returns the dots in row order.
 function dots(seed, master) {
   const out = [];
   const T = master ? null : traits(seed);
+  const [n1, n2] = master ? masterKeys(seed) : [0, 0];
   for (let y = 0; y < ROWS; y++) { const ny = y / (ROWS - 1);
     for (let x = 0; x < COLS; x++) { const nx = x / (COLS - 1);
       let t, dr, tt, c;
@@ -72,10 +80,10 @@ function dots(seed, master) {
         c = grad(T.stops, tt, T.pos);
       }
       let h = c[0] + dr * 0.4, sat = c[1], l = c[2];
-      const nz = master ? mulberry32((7777 + x * 19349663 + y * 83492791) >>> 0)() : mulberry32(mix(T.s, 73856093, x, 19349663, y, 83492791))();
+      const nz = master ? mulberry32((n1 + x * 19349663 + y * 83492791) >>> 0)() : mulberry32(mix(T.s, 73856093, x, 19349663, y, 83492791))();
       l += (nz - 0.5) * 4; sat += (nz - 0.5) * 4; h += (nz - 0.5) * 3;
       const vibr = sat / 95, ld = (master ? 0.7 : T.baseD) * (0.55 + vibr * 0.55);
-      const g = master ? mulberry32((7778 + x * 3266489917 + y * 668265263) >>> 0)() : mulberry32(mix(T.s, 2246822519 | 0, x, 3266489917 | 0, y, 668265263))();
+      const g = master ? mulberry32((n2 + x * 3266489917 + y * 668265263) >>> 0)() : mulberry32(mix(T.s, 2246822519 | 0, x, 3266489917 | 0, y, 668265263))();
       if (g > ld) continue;
       out.push({ x, y, cx: artL + (x + 0.5) * cw, cy: artT + (y + 0.5) * chh, r: cw * (0.08 + vibr * (master ? 0.2 : 0.18)),
         h: ((h % 360) + 360) % 360, s: master ? clamp(sat, 58, 95) : clamp(sat, 55, 95), l: master ? clamp(l, 36, 66) : clamp(l, 36, 64) });
@@ -103,4 +111,4 @@ function svg(seed, master) {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${W}" width="${W}" height="${W}"><rect width="${W}" height="${W}" fill="#ffffff"/>${circles}${frame}</svg>`;
 }
 
-module.exports = { dots, traits, svg, DIRS };
+module.exports = { dots, traits, svg, masterKeys, DIRS };

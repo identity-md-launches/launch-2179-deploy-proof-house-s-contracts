@@ -33,14 +33,16 @@ Owners may do anything with their piece. The security goal is non-owners only.
 **ArtifactsRenderer**
 - An on-chain port of `RULES.md`. It must reproduce the 11 pieces in `reference/framed/` byte for byte, as `reference/check-framed.js` proves for the JavaScript reference.
 - `renderSeal` draws the seal for any piece: the frame and its public traits, with no dots.
-- THE SOURCE is not recomputed on-chain. Before its auction opens the curator stores its finished metadata with SSTORE2 and locks it forever: `reference/the-source.payload.b64`, base64 JSON whose image is framed-MASTER.svg byte for byte. Once revealed, `tokenURI` returns `data:application/json;base64,` plus those bytes, copied as is, in about 7M gas. It does not animate: R10's shimmer and R11's drift would change the colours of the approved art.
+- THE SOURCE is not recomputed on-chain. Before its auction opens the curator stores its finished metadata, encrypted, with SSTORE2 and locks it forever with `keccak256(K)`. Once its owner reveals K, `tokenURI` returns `data:application/json;base64,` plus those bytes decrypted in place, in about 13M gas. It does not animate: R10's shimmer and R11's drift would change the colours of the approved art.
 - Editions are never rendered on-chain (R13): owners render them in their browser with the JavaScript port, so a seed never goes to an RPC provider.
 
 ## Keys
 
 **Content key.** Each piece has a random 256-bit key `K`. The seed and params are encrypted as `ciphertext_seed = AES-256-GCM(K, seed‖params, aad = pieceId)`.
 
-**Viewing key (R13: gated by the owner's signature).** Each owner registers an X25519 viewing public key once, and `K` is wrapped to it with ECIES. The private half is derived in the browser from the owner's wallet signature over a fixed, domain-separated message, so it is the same every time and the wallet's private key never leaves the wallet. Where the browser supports it, a **passkey** (WebAuthn PRF) can derive it instead.
+**Viewing key (R13: gated by the owner's signature).** Each owner registers an X25519 viewing public key once, and `K` is wrapped to it with ECIES. The exact format (site `sealcrypto.js`, shared by the site and the offline tools):
+- viewing secret = HKDF-SHA256(the wallet's signature over the fixed message, salt "Proof House viewing key v1", info "x25519"), used as an X25519 private key; the 32-byte public key is registered as a bytes32.
+- wrapped K (93 bytes) = 0x01 ‖ ephemeral X25519 public key ‖ 12-byte nonce ‖ AES-256-GCM(K) with its tag. The AES key is HKDF-SHA256(X25519(ephemeral, viewing key), salt = ephemeral ‖ viewing public key, info "Proof House key wrap v1"); the additional data is the piece id as a 32-byte integer. The private half is derived in the browser from the owner's wallet signature over a fixed, domain-separated message, so it is the same every time and the wallet's private key never leaves the wallet. Where the browser supports it, a **passkey** (WebAuthn PRF) can derive it instead.
 - SEED-SECURITY-SPEC §3's nonce and expiry can't apply to this signature: a nonce would change the signature and the key. So this signature is a long-lived secret; anyone who obtains it can view the piece. The site must only ever ask for it on the pinned viewer, and say so. Passkeys avoid this because they only work on the real site.
 
 **Viewing a piece**, all in the browser, with nothing sent anywhere:
@@ -64,10 +66,14 @@ Payment releases when the buyer confirms, or after 72 hours. The buyer can cance
 
 **Plain transfers.** Ordinary ERC-721 transfers stay allowed. The new owner sees only the seal until the previous owner calls `rewrapFor`.
 
-**THE SOURCE.** Under R9 it has no seed: its image is fixed by the rules. Its owner can set its write-once `revealed` flag, once and irreversibly. Until then its `tokenURI` shows the seal; from then on it returns the stored image: framed-MASTER.svg exactly as approved.
+**THE SOURCE.** Under R9 its dot field is keyed by its own secret 256-bit seed, made in the artist's offline ceremony (`tools/source/ceremony.js`) with its content key K. Everything else (composition, palette, drift, frame) is the public study, framed-MASTER.svg. The chain holds only its metadata encrypted: byte j is the plaintext byte XOR byte (j % 32) of keccak256(K ‖ uint256(j / 32)), locked with `keccak256(K)` before the auction.
+1. After settlement, the winner registers a viewing key on THE SOURCE's contract.
+2. The curator wraps K to it offline (`tools/source/wrap_key.js`) and delivers it once (`ArtifactsSource.deliverKey`), then deletes K.
+3. The owner can view it privately in the browser at any time.
+4. The owner may `reveal(K)`, once and irreversibly: the contract checks K against the commitment and from then on `tokenURI` decrypts the image for everyone. Later owners receive K from the owner before them, as with every piece.
 
 ## Disclose to buyers (consequences of the rules as written)
-- **R9:** THE SOURCE's image is fixed by the public algorithm, so anyone running the rules can draw it before it is revealed. Revealing makes it official and puts it on-chain.
+- **R9:** THE SOURCE's composition is public (the study, framed-MASTER.svg); only its dot field is secret. Before it is revealed, the artist and the curator (who made and delivered K) and its owner can see it.
 - **R1:** each edition's image depends on a 32-bit render key. Someone willing to run the renderer for many keys can look for one that matches an edition's public traits.
 - SEED-SECURITY-SPEC already says not to market "only one person can ever see it".
 

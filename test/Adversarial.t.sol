@@ -1081,14 +1081,14 @@ contract PieceEdgeTest is Fixture {
     function test_revealNeedsLockedPayload_andEmptyPayloadURI() public {
         StubController ctl = new StubController();
         ArtifactsPiece src = ArtifactsPiece(Clones.clone(address(pieceImpl)));
-        src.initialize(address(ctl), address(house), 256, alice, _traits(256), address(0), bytes32(0), "", true);
+        src.initialize(address(ctl), address(house), 256, alice, _traits(256), address(0), SOURCE_COMMITMENT, "", true);
         assertEq(src.name(), unicode"ARTIFACTS · THE SOURCE");
         vm.prank(alice);
         vm.expectRevert(ArtifactsPiece.NotRevealable.selector);
-        src.setRevealed();
+        src.reveal(SOURCE_KEY);
         ctl.setLocked(true);
         vm.prank(alice);
-        src.setRevealed();
+        src.reveal(SOURCE_KEY);
         assertEq(src.tokenURI(1), "data:application/json;base64,", "no chunks: prefix only");
         // revealed is write-once and survives a transfer
         vm.prank(alice);
@@ -1096,7 +1096,7 @@ contract PieceEdgeTest is Fixture {
         assertTrue(src.revealed());
         vm.prank(bob);
         vm.expectRevert(ArtifactsPiece.AlreadyRevealed.selector);
-        src.setRevealed();
+        src.reveal(SOURCE_KEY);
     }
 }
 
@@ -1105,7 +1105,7 @@ contract SourceEdgeTest is Fixture {
     function _lock() internal {
         vm.startPrank(curator);
         source.storePayloadChunk("payload");
-        source.lockPayload();
+        source.lockPayload(SOURCE_COMMITMENT);
         vm.stopPrank();
     }
 
@@ -1121,7 +1121,7 @@ contract SourceEdgeTest is Fixture {
         vm.stopPrank();
         vm.prank(alice);
         vm.expectRevert(TwoStepOwnable.NotOwner.selector);
-        source.lockPayload();
+        source.lockPayload(SOURCE_COMMITMENT);
         vm.prank(alice);
         vm.expectRevert(TwoStepOwnable.NotOwner.selector);
         source.resetPayload();
@@ -1275,7 +1275,7 @@ contract SourceEdgeTest is Fixture {
         assertEq(piece.ownerOf(1), bob);
         assertEq(house.balances(artist, address(0)) - artistBefore, 0.75 ether);
         vm.prank(bob);
-        piece.setRevealed();
+        piece.reveal(SOURCE_KEY);
         assertTrue(piece.revealed());
     }
 

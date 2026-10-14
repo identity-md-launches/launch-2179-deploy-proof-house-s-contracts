@@ -167,7 +167,7 @@ contract SourceAuctionInvariantTest is Fixture {
         super.setUp();
         vm.startPrank(curator);
         source.storePayloadChunk("payload");
-        source.lockPayload();
+        source.lockPayload(SOURCE_COMMITMENT);
         source.setAuction(1 ether, uint64(vm.getBlockTimestamp() + 1 hours));
         vm.stopPrank();
         address[] memory actors = new address[](4);

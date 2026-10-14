@@ -536,6 +536,6 @@ contract ArtifactsPieceEscrowTest is Fixture {
     function test_sourceOnlyReveal() public {
         vm.prank(alice);
         vm.expectRevert(ArtifactsPiece.NotSource.selector);
-        piece.setRevealed();
+        piece.reveal(SOURCE_KEY);
     }
 }

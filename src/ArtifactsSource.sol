@@ -7,8 +7,13 @@ import {SSTORE2} from "./libs/SSTORE2.sol";
 import {Clones} from "./libs/Clones.sol";
 import {IArtHouse, IArtifactsPiece, Traits} from "./interfaces/Interfaces.sol";
 
-/// @notice THE SOURCE (ARTIFACTS piece 256): stores its approved metadata with SSTORE2, locks it forever, and
-/// sells the single lot by an ascending ETH auction whose proceeds go through the Proof House ledger.
+/// @notice THE SOURCE (ARTIFACTS piece 256): stores its metadata encrypted with SSTORE2, locks it forever with a
+/// commitment to its content key, and sells the single lot by an ascending ETH auction whose proceeds go through the
+/// Proof House ledger. The curator delivers the key to the winner once, wrapped to their viewing key; the winner
+/// alone decides whether to reveal it.
+///
+/// Encryption: byte j of the stored payload is plaintext byte j XOR byte (j % 32) of keccak256(K ‖ uint256(j / 32)),
+/// with K a random 256-bit key and the commitment keccak256(K). Revealing publishes K; the piece then decrypts.
 contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard {
     uint256 public constant SOURCE_ID = 256;
     uint256 public constant MIN_RAISE_BPS = 500; // each bid beats the high bid by 5%
@@ -21,6 +26,8 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard {
     address[] private _chunks;
     uint256 public payloadSize;
     bool public payloadLocked;
+    bytes32 public keyCommitment; // keccak256(K), K the key that decrypts the stored payload
+    bool public keyDelivered; // the curator's one delivery of K to the winner
 
     // ---------- auction ----------
     uint256 public reserve;
@@ -34,7 +41,8 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard {
     address public pieceContract;
 
     event PayloadChunkStored(uint256 index, address pointer, uint256 size);
-    event PayloadLocked(bytes32 hash, uint256 size);
+    event PayloadLocked(bytes32 hash, uint256 size, bytes32 keyCommitment);
+    event KeyDelivered(address indexed owner);
     event AuctionSet(uint256 reserve, uint64 endTime);
     event Bid(address indexed bidder, address indexed broker, uint256 amount, uint64 endTime);
     event RefundWithdrawn(address indexed bidder, uint256 amount);
@@ -53,6 +61,9 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard {
     error NoBids();
     error NothingToWithdraw();
     error TransferFailed();
+    error NoCommitment();
+    error NotSettled();
+    error AlreadyDelivered();
 
     constructor(address owner_, address house_, address pieceImplementation_) TwoStepOwnable(owner_) {
         if (house_ == address(0) || pieceImplementation_ == address(0)) revert ZeroAddress();
@@ -60,7 +71,7 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard {
         pieceImplementation = pieceImplementation_;
     }
 
-    // ---------- payload (the bytes of artifacts/reference/the-source.payload.b64) ----------
+    // ---------- payload (the encrypted bytes of THE SOURCE's base64 metadata, from the offline ceremony) ----------
 
     function storePayloadChunk(bytes calldata data) external onlyOwner {
         if (payloadLocked) revert IsLocked();
@@ -78,11 +89,14 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard {
         payloadSize = 0;
     }
 
-    function lockPayload() external onlyOwner {
+    /// @notice Locks the stored ciphertext forever, with the commitment keccak256(K) to the key that decrypts it.
+    function lockPayload(bytes32 keyCommitment_) external onlyOwner {
         if (payloadLocked) revert IsLocked();
         if (_chunks.length == 0) revert EmptyPayload();
+        if (keyCommitment_ == bytes32(0)) revert NoCommitment();
         payloadLocked = true;
-        emit PayloadLocked(payloadHash(), payloadSize);
+        keyCommitment = keyCommitment_;
+        emit PayloadLocked(payloadHash(), payloadSize, keyCommitment_);
     }
 
     function payloadChunks() external view returns (address[] memory) {
@@ -101,8 +115,23 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard {
         }
     }
 
+    /// @notice keccak256 of the stored (encrypted) payload.
     function payloadHash() public view returns (bytes32) {
         return keccak256(payload());
+    }
+
+    // ---------- the key ----------
+
+    /// @notice The curator's single delivery of K to THE SOURCE's owner after settlement, wrapped to the viewing key
+    /// they registered on THE SOURCE's contract. Later owners receive K from the owner before them (re-wrap after a
+    /// transfer, or the keyed escrow), never from the curator.
+    function deliverKey(bytes calldata wrapped) external onlyOwner {
+        if (!settled) revert NotSettled();
+        if (keyDelivered) revert AlreadyDelivered();
+        keyDelivered = true;
+        IArtifactsPiece piece = IArtifactsPiece(pieceContract);
+        piece.rewrapFor(wrapped);
+        emit KeyDelivered(piece.ownerOf(1));
     }
 
     // ---------- auction ----------
@@ -166,7 +195,7 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard {
                     title: unicode"ARTIFACTS  ◆  MASTER", palette: "PRISM", colourCount: 9, direction: "DIAGONAL"
                 }),
                 address(0),
-                bytes32(0),
+                keyCommitment,
                 "",
                 true
             );

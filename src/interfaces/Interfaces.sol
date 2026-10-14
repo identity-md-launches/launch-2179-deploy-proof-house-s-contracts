@@ -61,6 +61,8 @@ interface IArtifactsPiece {
         bytes calldata wrappedKey,
         bool isSource
     ) external;
+    function rewrapFor(bytes calldata wrapped) external;
+    function ownerOf(uint256 tokenId) external view returns (address);
 }
 
 /// @notice A sale module that deploys piece contracts answers whether a contract is one of its pieces.

@@ -17,6 +17,9 @@ abstract contract Fixture is Test {
     address internal artist = makeAddr("artist");
     address internal broker = makeAddr("broker");
     address internal alice = makeAddr("alice");
+    /// @dev THE SOURCE's test content key K and its commitment keccak256(K) (a test value, not a ceremony key).
+    bytes32 internal constant SOURCE_KEY = keccak256("ARTIFACTS test source key");
+    bytes32 internal SOURCE_COMMITMENT = keccak256(abi.encodePacked(SOURCE_KEY));
     address internal bob = makeAddr("bob");
     address internal carol = makeAddr("carol");
 
@@ -95,5 +98,16 @@ abstract contract Fixture is Test {
         factory.postWrappedKey(edition, abi.encodePacked("wrapped", edition));
         vm.prank(buyer);
         piece = ArtifactsPiece(factory.claim(edition));
+    }
+
+    /// @dev THE SOURCE's encryption: byte j XOR byte (j % 32) of keccak256(K ‖ uint256(j / 32)). Its own inverse.
+    function _sourceCipher(bytes memory data, bytes32 key) internal pure returns (bytes memory out) {
+        out = new bytes(data.length);
+        for (uint256 i; i * 32 < data.length; ++i) {
+            bytes32 ks = keccak256(abi.encodePacked(key, i));
+            for (uint256 j = i * 32; j < data.length && j < i * 32 + 32; ++j) {
+                out[j] = data[j] ^ ks[j - i * 32];
+            }
+        }
     }
 }

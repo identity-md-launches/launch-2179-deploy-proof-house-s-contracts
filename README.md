@@ -18,7 +18,7 @@ only when a piece is bought.
 | 1 | `ArtHouse` | `($owner, $contract:ArtStorage, IMD)` | The ledger: artists, brokers, sale modules, splits, balances, plain collections, submissions. Its constructor deploys the `ArtCollection` implementation. |
 | 2 | `ArtifactsPiece` | `()` | Locked implementation: a one-token ERC-721 + ERC-2981 per piece (clone per edition; full copy for THE SOURCE) |
 | 3 | `ArtifactsFactory` | `($owner, $contract:ArtHouse, $contract:ArtifactsPiece)` | Publishes the 255 editions, sells them, VRF assignment, claims |
-| 4 | `ArtifactsSource` | `($owner, $contract:ArtHouse, $contract:ArtifactsPiece)` | THE SOURCE: stored payload, single-lot auction, settlement |
+| 4 | `ArtifactsSource` | `($owner, $contract:ArtHouse, $contract:ArtifactsPiece)` | THE SOURCE: encrypted payload, single-lot auction, settlement, one key delivery |
 
 `$owner` is the curator: `0xd3e32C1eBEa3a675EffCaAcAf89196948Abd1386`. `script/Deploy.s.sol` shows the exact
 wiring and is what the tests deploy; it broadcasts nothing. Constructors take only static values, the owner and
@@ -44,10 +44,12 @@ no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH lea
 7. `ArtifactsFactory.setPiece(id, traits, ciphertext, commitment)` for ids 1..255: public traits (title, palette,
    colour count, direction), the AES-256-GCM encrypted seed and `keccak256(K)`. Then `lock()` — forever.
 8. `ArtifactsFactory.setPrice(wei)` (above zero, only while closed) and `setSaleOpen(true)`.
-9. THE SOURCE: `ArtifactsSource.storePayloadChunk(bytes)` with consecutive ≤24,575-byte slices of
-   `reference/the-source.payload.b64` (the bytes of the reference repository's `artifacts/reference/the-source.payload.b64`) (77 chunks of up to 24,000 bytes in the tests), then `lockPayload()`.
-   `payloadHash()` must equal keccak256 of the file. Then
-   `setAuction(reserveWei, endTime)`.
+9. THE SOURCE: the artist's offline ceremony (`tools/source/ceremony.js` in the Proof House workspace) makes its
+   secret seed and content key K and writes `the-source.sealed.hex` (its metadata, encrypted) and
+   `the-source.public.json` (`keyCommitment = keccak256(K)`). `ArtifactsSource.storePayloadChunk(bytes)` with
+   consecutive ≤24,575-byte slices of the sealed bytes, then `lockPayload(keyCommitment)`. `payloadHash()` must equal
+   the ceremony's `sealedHash`. Then `setAuction(reserveWei, endTime)`. The tests use the public study
+   (`reference/the-source.payload.b64`) encrypted with a test key.
 
 ## ARTIFACTS flow
 
@@ -79,12 +81,15 @@ no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH lea
   final 10 minutes moves the end to 10 minutes after it; outbid bids are refunded by `withdrawRefund()` (pull).
   `settle()` sends the proceeds through the ledger and deploys THE SOURCE's own contract — a full byte copy of
   ArtifactsPiece's runtime (not a proxy, so the 1.8 MB revealed answer is copied once) named
-  `ARTIFACTS · THE SOURCE`. Its owner may `setRevealed()` once; before that `tokenURI` is the R9 seal, after it
-  returns `data:application/json;base64,` + the stored payload bytes copied as is, in ≈7.2M gas (tested under
-  10M and byte-for-byte equal to the file, whose image decodes to `framed-MASTER.svg`). If the auction ends with
-  no bid the curator may set it again.
+  `ARTIFACTS · THE SOURCE`, carrying `commitment = keccak256(K)`. The stored payload is encrypted: byte j is the
+  plaintext byte XOR byte (j % 32) of keccak256(K ‖ uint256(j / 32)). The winner registers a viewing key on THE
+  SOURCE's contract; the curator calls `deliverKey(wrapped)` once (K wrapped to that key); later owners get K from
+  the owner before them (`rewrapFor` or the escrow). The owner may `reveal(K)` once (K must match the commitment;
+  not while a buyer is in escrow); before that `tokenURI` is the R9 seal, after it returns
+  `data:application/json;base64,` + the stored payload decrypted in place, in ≈13.0M gas (tested under 14M, and
+  byte for byte). If the auction ends with no bid the curator may set it again.
 - **Views**: `price`, `remaining`, `editionsOf`, `pieceContract`, `traitsOf`, `ciphertextOf`, `commitmentOf`,
-  `wrappedKeyOf`, `auctionState`, `revealed`.
+  `wrappedKeyOf`, `auctionState`, `keyCommitment`, `keyDelivered`, `revealed`, `revealKey`.
 
 ## Plain SVG collections (ArtHouse)
 
@@ -145,5 +150,6 @@ forge fmt --check
 Foundry profile: solc 0.8.26, via-IR, optimizer 200 runs, `bytecode_hash = "none"`, read-only `fs_permissions`
 on `reference/` (tests read the payload and reference SVGs). Dependencies: forge-std only, vendored in `lib/`.
 Tests cover: split invariants per currency (fuzzed), VRF assignment of all 255 editions, claim, escrow and
-re-keying, auction, reveal, access control, reentrancy, seals per RULES.md R8, and THE SOURCE's revealed
-tokenURI decoding to framed-MASTER.svg byte for byte.
+re-keying, auction, access control, reentrancy, seals per RULES.md R8, and THE SOURCE's encryption: unreadable
+when stored, revealed only with the committed key, decrypting byte for byte at any length (fuzzed), one curator key
+delivery, no reveal under escrow.

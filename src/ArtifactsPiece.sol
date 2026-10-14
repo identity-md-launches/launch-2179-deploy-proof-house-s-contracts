@@ -10,8 +10,8 @@ import {IArtHouse, IPayloadSource, Traits} from "./interfaces/Interfaces.sol";
 
 /// @notice One ARTIFACTS piece: a one-token ERC-721 + ERC-2981, deployed as an EIP-1167 clone at claim.
 /// Holds the ciphertext pointer, public traits, key commitment and the current owner's wrapped content key.
-/// Runs its own keyed resale escrow and re-keying after plain transfers. THE SOURCE (piece 256) adds the
-/// write-once `revealed` flag and serves its stored metadata once revealed.
+/// Runs its own keyed resale escrow and re-keying after plain transfers. THE SOURCE (piece 256) adds a one-time
+/// reveal: its owner publishes its content key, and from then on tokenURI decrypts its stored metadata.
 contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
     uint256 public constant TOKEN_ID = 1;
     uint256 public constant ESCROW_TIMEOUT = 72 hours;
@@ -24,6 +24,7 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
     uint256 public pieceId;
     bool public isSource;
     bool public revealed;
+    bytes32 public revealKey; // THE SOURCE's content key K, published by its owner at reveal
 
     Traits private _traits;
     address public ciphertextPointer;
@@ -56,7 +57,7 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
     event EscrowReleased(
         address indexed seller, address indexed buyer, uint256 price, uint256 royalty, address broker, uint256 brokerShare
     );
-    event Revealed();
+    event Revealed(bytes32 key);
     event Withdrawn(address indexed to, uint256 amount);
 
     error AlreadyInitialized();
@@ -78,6 +79,7 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
     error TransferFailed();
     error NothingToWithdraw();
     error NotRevealable();
+    error WrongKey();
 
     constructor() {
         controller = address(this); // lock the implementation; only clones can be initialised
@@ -281,13 +283,19 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
 
     // ---------- THE SOURCE ----------
 
-    function setRevealed() external {
+    /// @notice THE SOURCE's owner reveals it to everyone, once and forever, by publishing its content key K. The key
+    /// must match the commitment locked before the auction. Not while a buyer's payment sits in escrow: they paid
+    /// for it sealed.
+    function reveal(bytes32 key) external {
         if (!isSource) revert NotSource();
         if (msg.sender != ownerOf(TOKEN_ID)) revert NotTokenOwner();
         if (revealed) revert AlreadyRevealed();
         if (!IPayloadSource(controller).payloadLocked()) revert NotRevealable();
+        if (escrow.buyer != address(0)) revert EscrowActive();
+        if (keccak256(abi.encodePacked(key)) != commitment) revert WrongKey();
+        revealKey = key;
         revealed = true;
-        emit Revealed();
+        emit Revealed(key);
     }
 
     // ---------- metadata ----------
@@ -331,9 +339,10 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
         );
     }
 
-    /// @dev "data:application/json;base64," + the stored payload bytes copied as is, assembled in one memory
-    /// buffer and returned directly so the 1.8 MB payload is never copied twice.
+    /// @dev "data:application/json;base64," + the stored payload, decrypted in place with the revealed key, assembled
+    /// in one memory buffer and returned directly so the 1.8 MB payload is never copied twice.
     function _revealedURI() private view returns (string memory) {
+        bytes32 key = revealKey;
         address[] memory chunks = IPayloadSource(controller).payloadChunks();
         uint256 total = 29;
         for (uint256 i; i < chunks.length; ++i) {
@@ -346,7 +355,8 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
             mstore(add(ptr, 0x20), total) // length
             let data := add(ptr, 0x40)
             mstore(data, mload(add(prefix, 0x20))) // 29 prefix bytes (the tail gets overwritten below)
-            let cursor := add(data, 29)
+            let start := add(data, 29)
+            let cursor := start
             let n := mload(chunks)
             for { let i := 0 } lt(i, n) { i := add(i, 1) } {
                 let p := mload(add(add(chunks, 0x20), mul(i, 0x20)))
@@ -354,6 +364,22 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
                 extcodecopy(p, cursor, 1, len)
                 cursor := add(cursor, len)
             }
+            // decrypt in place: payload byte j XOR byte (j % 32) of keccak256(K ‖ uint256(j / 32)), four blocks a
+            // turn; the last turn may run up to four blocks past the payload, into memory nothing else uses
+            mstore(0x00, key)
+            let i := 0
+            for { let at := start } lt(at, cursor) { at := add(at, 0x80) } {
+                mstore(0x20, i)
+                mstore(at, xor(mload(at), keccak256(0x00, 0x40)))
+                mstore(0x20, add(i, 1))
+                mstore(add(at, 0x20), xor(mload(add(at, 0x20)), keccak256(0x00, 0x40)))
+                mstore(0x20, add(i, 2))
+                mstore(add(at, 0x40), xor(mload(add(at, 0x40)), keccak256(0x00, 0x40)))
+                mstore(0x20, add(i, 3))
+                mstore(add(at, 0x60), xor(mload(add(at, 0x60)), keccak256(0x00, 0x40)))
+                i := add(i, 4)
+            }
+            mstore(cursor, 0) // zero what follows the payload (the ABI padding)
             // pad to a word boundary and return the ABI-encoded string
             let end := and(add(cursor, 31), not(31))
             return(ptr, sub(end, ptr))
