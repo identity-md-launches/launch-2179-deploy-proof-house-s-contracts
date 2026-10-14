@@ -11,6 +11,8 @@ import {IArtHouse, IArtifactsPiece, IVRFCoordinatorV2Plus, Traits} from "./inter
 /// with Chainlink VRF v2.5, and deploys each buyer's piece clone at claim.
 contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard {
     uint256 public constant EDITIONS = 255;
+    /// @notice Most editions one wallet can buy, across all its purchases.
+    uint256 public constant MAX_PER_WALLET = 5;
     uint32 public constant VRF_CALLBACK_GAS = 250_000;
     uint16 public constant VRF_CONFIRMATIONS = 3;
     /// @dev Blocks a VRF request may stay unfulfilled before the curator can re-request it (~24h at 12s blocks,
@@ -37,6 +39,7 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard {
     bool public saleOpen;
     uint256 public sold; // purchases paid (VRF requested)
     uint256 public assigned; // editions assigned by VRF callbacks
+    mapping(address => uint256) public mintedBy; // editions bought by each wallet, capped at MAX_PER_WALLET
 
     // ---------- VRF ----------
     IVRFCoordinatorV2Plus public vrfCoordinator;
@@ -89,6 +92,8 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard {
     error AlreadyClaimed();
     error AlreadyFulfilled();
     error RequestTooRecent();
+    error BadQuantity();
+    error WalletLimit();
 
     constructor(address owner_, address house_, address pieceImplementation_) TwoStepOwnable(owner_) {
         if (house_ == address(0) || pieceImplementation_ == address(0)) revert ZeroAddress();
@@ -160,16 +165,38 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard {
 
     // ---------- buying ----------
 
-    /// @notice Pay exactly `price` in ETH; the sale is recorded in the ledger and a VRF request assigns the edition.
+    /// @notice Pay exactly `price` in ETH for one edition; the sale is recorded in the ledger and a VRF request
+    /// assigns the edition.
     function buy(address broker) external payable nonReentrant returns (uint256 requestId) {
+        requestId = _buy(1, broker)[0];
+    }
+
+    /// @notice Buy `quantity` editions (1 to MAX_PER_WALLET, counting the wallet's earlier purchases) for exactly
+    /// `price * quantity`. Each edition gets its own VRF request, so each is drawn independently.
+    function buyMany(uint256 quantity, address broker)
+        external
+        payable
+        nonReentrant
+        returns (uint256[] memory requestIds)
+    {
+        requestIds = _buy(quantity, broker);
+    }
+
+    function _buy(uint256 quantity, address broker) private returns (uint256[] memory requestIds) {
         if (!saleOpen) revert SaleClosed();
-        if (msg.value != price) revert WrongPrice();
-        if (sold >= EDITIONS) revert SoldOut();
+        if (quantity == 0 || quantity > MAX_PER_WALLET) revert BadQuantity();
+        if (msg.value != price * quantity) revert WrongPrice();
+        if (sold + quantity > EDITIONS) revert SoldOut();
+        if (mintedBy[msg.sender] + quantity > MAX_PER_WALLET) revert WalletLimit();
         if (address(vrfCoordinator) == address(0)) revert VRFNotConfigured();
-        sold += 1;
+        sold += quantity;
+        mintedBy[msg.sender] += quantity;
         house.recordSale{value: msg.value}(address(this), msg.sender, broker);
-        requestId = _requestRandomness(msg.sender);
-        emit Purchased(msg.sender, broker, requestId, msg.value);
+        requestIds = new uint256[](quantity);
+        for (uint256 i; i < quantity; ++i) {
+            requestIds[i] = _requestRandomness(msg.sender);
+            emit Purchased(msg.sender, broker, requestIds[i], price);
+        }
     }
 
     /// @notice If the coordinator never answered a purchase's request (e.g. the subscription ran dry and Chainlink
@@ -263,6 +290,13 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard {
 
     function remaining() external view returns (uint256) {
         return EDITIONS - sold;
+    }
+
+    /// @notice How many more editions `buyer` may buy: the wallet limit, or what is left, whichever is lower.
+    function allowanceOf(address buyer) external view returns (uint256) {
+        uint256 left = MAX_PER_WALLET - mintedBy[buyer];
+        uint256 unsold = EDITIONS - sold;
+        return left < unsold ? left : unsold;
     }
 
     function editionsOf(address buyer) external view returns (uint256[] memory) {

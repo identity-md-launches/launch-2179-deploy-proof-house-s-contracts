@@ -124,12 +124,78 @@ contract ArtifactsFactoryTest is Fixture {
         factory.rawFulfillRandomWords(1, new uint256[](1));
     }
 
+    function test_buyMany_fivePerWallet() public {
+        _publishAll();
+        _openSale(1 ether);
+        assertEq(factory.allowanceOf(alice), 5);
+        // quantity must be 1..5 and paid exactly
+        vm.startPrank(alice);
+        vm.expectRevert(ArtifactsFactory.BadQuantity.selector);
+        factory.buyMany{value: 0}(0, address(0));
+        vm.expectRevert(ArtifactsFactory.BadQuantity.selector);
+        factory.buyMany{value: 6 ether}(6, address(0));
+        vm.expectRevert(ArtifactsFactory.WrongPrice.selector);
+        factory.buyMany{value: 2 ether}(3, address(0));
+        // three at once: three independent draws, one ledger sale with the broker's 15% of the total
+        uint256[] memory ids = factory.buyMany{value: 3 ether}(3, broker);
+        vm.stopPrank();
+        assertEq(ids.length, 3);
+        assertEq(factory.sold(), 3);
+        assertEq(factory.mintedBy(alice), 3);
+        assertEq(factory.allowanceOf(alice), 2);
+        assertEq(house.balances(broker, address(0)), 0.45 ether);
+        assertEq(house.balances(artist, address(0)), 2.1 ether);
+        for (uint256 i; i < 3; ++i) {
+            assertEq(factory.requestBuyer(ids[i]), alice);
+            vrf.fulfill(ids[i], i);
+        }
+        assertEq(factory.editionsOf(alice).length, 3);
+        // the limit counts every purchase: 3 + 3 is refused, 3 + 1 + 1 reaches it, then nothing more
+        vm.startPrank(alice);
+        vm.expectRevert(ArtifactsFactory.WalletLimit.selector);
+        factory.buyMany{value: 3 ether}(3, address(0));
+        factory.buy{value: 1 ether}(address(0));
+        factory.buyMany{value: 1 ether}(1, address(0));
+        assertEq(factory.allowanceOf(alice), 0);
+        vm.expectRevert(ArtifactsFactory.WalletLimit.selector);
+        factory.buy{value: 1 ether}(address(0));
+        vm.stopPrank();
+        // other wallets are unaffected
+        vm.prank(bob);
+        factory.buyMany{value: 5 ether}(5, address(0));
+        assertEq(factory.mintedBy(bob), 5);
+        assertEq(factory.sold(), 10);
+    }
+
+    function test_buyMany_cannotPassSupply() public {
+        _publishAll();
+        _openSale(1 ether);
+        for (uint256 i; i < 51; ++i) {
+            address buyer = makeAddr(string(abi.encodePacked("w", vm.toString(i))));
+            vm.deal(buyer, 5 ether);
+            vm.prank(buyer);
+            if (i < 50) factory.buyMany{value: 5 ether}(5, address(0));
+            else factory.buyMany{value: 4 ether}(4, address(0)); // 254 sold
+        }
+        assertEq(factory.remaining(), 1);
+        assertEq(factory.allowanceOf(alice), 1);
+        vm.prank(alice);
+        vm.expectRevert(ArtifactsFactory.SoldOut.selector);
+        factory.buyMany{value: 2 ether}(2, address(0));
+        vm.prank(alice);
+        factory.buyMany{value: 1 ether}(1, address(0));
+        assertEq(factory.remaining(), 0);
+        assertEq(factory.allowanceOf(bob), 0);
+    }
+
     function test_buyRecordsSaleAndAssignsEveryEditionOnce() public {
         _publishAll();
         _openSale(1 ether);
         bool[256] memory seen;
         for (uint256 i; i < 255; ++i) {
-            address buyer = i % 2 == 0 ? alice : bob;
+            // five per wallet: alice takes the first five, then a new wallet every five editions
+            address buyer = i < 5 ? alice : makeAddr(string(abi.encodePacked("buyer", vm.toString(i / 5))));
+            if (buyer != alice) vm.deal(buyer, 1 ether);
             uint256 edition = _buyAndAssign(buyer, i % 3 == 0 ? broker : address(0), uint256(keccak256(abi.encode(i))));
             assertTrue(edition >= 1 && edition <= 255, "range");
             assertFalse(seen[edition], "assigned twice");
@@ -141,7 +207,7 @@ contract ArtifactsFactoryTest is Fixture {
         }
         assertEq(factory.assigned(), 255);
         assertEq(factory.remaining(), 0);
-        assertEq(factory.editionsOf(alice).length, 128);
+        assertEq(factory.editionsOf(alice).length, 5);
         vm.prank(alice);
         vm.expectRevert(ArtifactsFactory.SoldOut.selector);
         factory.buy{value: 1 ether}(address(0));

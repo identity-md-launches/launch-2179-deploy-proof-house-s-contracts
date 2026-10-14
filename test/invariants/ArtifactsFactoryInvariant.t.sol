@@ -59,7 +59,8 @@ contract FactoryHandler is Test {
         uint256 price = factory.price();
         uint256 value = exactPrice ? price : (brokerSeed % 2 == 0 ? price - 1 : price + 1);
         vm.deal(buyer, value);
-        bool ok = factory.saleOpen() && exactPrice && factory.sold() < factory.EDITIONS();
+        bool ok = factory.saleOpen() && exactPrice && factory.sold() < factory.EDITIONS()
+            && factory.mintedBy(buyer) < factory.MAX_PER_WALLET();
         if (!ok) {
             vm.prank(buyer);
             vm.expectRevert();
@@ -75,6 +76,35 @@ contract FactoryHandler is Test {
         pending.push(id);
         requestBuyer[id] = buyer;
         paid += price;
+    }
+
+    /// @dev Several editions in one purchase: any quantity, valid or not, against the wallet limit and supply.
+    function buyMany(uint256 buyerSeed, uint256 quantity, bool exactPrice) external {
+        address buyer = buyers[buyerSeed % buyers.length];
+        quantity = bound(quantity, 0, 7);
+        uint256 price = factory.price();
+        uint256 value = exactPrice ? price * quantity : price * quantity + 1;
+        vm.deal(buyer, value);
+        bool ok = factory.saleOpen() && exactPrice && quantity >= 1 && quantity <= factory.MAX_PER_WALLET()
+            && factory.sold() + quantity <= factory.EDITIONS()
+            && factory.mintedBy(buyer) + quantity <= factory.MAX_PER_WALLET();
+        if (!ok) {
+            vm.prank(buyer);
+            vm.expectRevert();
+            factory.buyMany{value: value}(quantity, address(0));
+            return;
+        }
+        uint256 soldBefore = factory.sold();
+        vm.prank(buyer);
+        uint256[] memory ids = factory.buyMany{value: value}(quantity, address(0));
+        assertEq(ids.length, quantity);
+        assertEq(factory.sold(), soldBefore + quantity);
+        for (uint256 i; i < ids.length; ++i) {
+            assertEq(factory.requestBuyer(ids[i]), buyer);
+            pending.push(ids[i]);
+            requestBuyer[ids[i]] = buyer;
+        }
+        paid += value;
     }
 
     function fulfil(uint256 idx, uint256 word) external {
@@ -216,10 +246,13 @@ contract ArtifactsFactoryInvariantTest is Fixture {
         super.setUp();
         _publishAll();
         _openSale(0.5 ether);
-        address[] memory buyers = new address[](3);
+        address[] memory buyers = new address[](6);
         buyers[0] = alice;
         buyers[1] = bob;
         buyers[2] = carol;
+        buyers[3] = makeAddr("dave");
+        buyers[4] = makeAddr("erin");
+        buyers[5] = makeAddr("frank");
         h = new FactoryHandler(factory, vrf, house, curator, broker, buyers);
         targetContract(address(h));
     }
@@ -237,6 +270,17 @@ contract ArtifactsFactoryInvariantTest is Fixture {
             assertEq(factory.requestBuyer(id), h.requestBuyer(id));
             assertEq(factory.requestEdition(id), 0);
         }
+    }
+
+    /// @dev No wallet ever holds more than MAX_PER_WALLET purchases, and the per-wallet counts add up to `sold`.
+    function invariant_walletLimit() public view {
+        uint256 total;
+        for (uint256 i; i < 6; ++i) {
+            uint256 m = factory.mintedBy(h.buyers(i));
+            assertLe(m, factory.MAX_PER_WALLET());
+            total += m;
+        }
+        assertEq(total, factory.sold());
     }
 
     /// @dev Every purchase's ETH sits in the ledger, split and owed to artist / broker / house.
