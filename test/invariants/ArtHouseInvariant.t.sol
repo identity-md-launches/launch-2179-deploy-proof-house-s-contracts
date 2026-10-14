@@ -105,10 +105,16 @@ contract LedgerHandler is Test {
     ) internal {
         (address artist, uint16 bb, uint16 hb, uint16 ab) = _bps(collection);
         uint256 artistShare = (amount * ab) / 10_000;
-        bool eligible = broker != address(0) && broker != buyer && house.brokers(broker);
+        bool eligible = broker != buyer && house.isEligibleBroker(broker);
         uint256 brokerShare = eligible ? (amount * bb) / 10_000 : 0;
         uint256 houseShare = amount - artistShare - brokerShare;
-        assertGe(houseShare, (amount * hb) / 10_000, "house takes rounding");
+        if (hb == 0) {
+            // no house share: the artist takes the rounding and any unearned broker share
+            artistShare += houseShare;
+            houseShare = 0;
+        } else {
+            assertGe(houseShare, (amount * hb) / 10_000, "house takes rounding");
+        }
         address[] memory p = parties();
         for (uint256 i; i < p.length; ++i) {
             uint256 expected;

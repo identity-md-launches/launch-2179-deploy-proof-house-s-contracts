@@ -6,7 +6,7 @@ import {ReentrancyGuard} from "./base/ReentrancyGuard.sol";
 import {Clones} from "./libs/Clones.sol";
 import {ArtStorage} from "./ArtStorage.sol";
 import {ArtCollection} from "./ArtCollection.sol";
-import {IERC20, IArtCollection} from "./interfaces/Interfaces.sol";
+import {IERC20, IArtCollection, IPieceRegistry, IPieceController, IBalanceOf} from "./interfaces/Interfaces.sol";
 
 /// @notice Proof House ledger: artists, brokers, sale modules, per-collection splits, balances per currency,
 /// plain SVG collections (curation, pricing, minting) and open submissions. Owner = curator.
@@ -78,6 +78,8 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
     mapping(address => mapping(address => uint256)) public balances;
     Submission[] public submissions;
     address[] public collectionList;
+    /// @notice Proof House Broker Pass: holding one makes a wallet a broker. Set once by the owner.
+    address public brokerPass;
 
     // ---------- events ----------
     event ArtistApproved(address indexed artist, string name, address payout);
@@ -85,6 +87,10 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
     event PayoutChanged(address indexed artist, address payout);
     event BrokerSet(address indexed broker, bool approved);
     event SaleModuleSet(address indexed module, bool approved);
+    event BrokerPassSet(address indexed brokerPass);
+    event Resale(
+        address indexed collection, address indexed piece, address indexed broker, uint256 royalty, uint256 brokerShare
+    );
     event CollectionCreated(address indexed collection, address indexed artist, string name, string symbol);
     event ModuleCollectionRegistered(address indexed collection, address indexed artist);
     event SplitSet(address indexed collection, uint16 brokerBps, uint16 houseBps, uint16 artistBps);
@@ -132,6 +138,9 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
     error BadSubmission();
     error NotPending();
     error NotModuleCollection();
+    error BrokerPassAlreadySet();
+    error NotPiece();
+    error NotEligibleBroker();
 
     constructor(address owner_, address storage_, address imd_) TwoStepOwnable(owner_) {
         if (storage_ == address(0) || imd_ == address(0)) revert ZeroAddress();
@@ -172,6 +181,21 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
     function setSaleModule(address module, bool approved) external onlyOwner {
         saleModules[module] = approved;
         emit SaleModuleSet(module, approved);
+    }
+
+    /// @notice Set once after deployment, like the VRF settings: the pass is deployed after the ledger.
+    function setBrokerPass(address pass) external onlyOwner {
+        if (brokerPass != address(0)) revert BrokerPassAlreadySet();
+        if (pass == address(0)) revert ZeroAddress();
+        brokerPass = pass;
+        emit BrokerPassSet(pass);
+    }
+
+    /// @notice A broker earns when the curator approved it or it holds a Broker Pass at the time of the sale.
+    function isEligibleBroker(address broker) public view returns (bool) {
+        if (broker == address(0)) return false;
+        if (brokers[broker]) return true;
+        return brokerPass != address(0) && IBalanceOf(brokerPass).balanceOf(broker) > 0;
     }
 
     // ---------- collections ----------
@@ -372,6 +396,22 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
         if (token.balanceOf(address(this)) - before != amount) revert TransferFailed();
     }
 
+    /// @notice An ARTIFACTS piece contract credits a resale's royalty and broker share here, so the artist and
+    /// brokers withdraw once from the ledger instead of from each piece. The caller must be a piece of an approved
+    /// module collection, as that module confirms; the ETH comes with the call.
+    function recordResale(address broker, uint256 royalty, uint256 brokerShare) external payable {
+        address module = IPieceController(msg.sender).controller();
+        Collection storage c = collections[module];
+        if (!saleModules[module] || !c.exists || !c.isModule || !IPieceRegistry(module).isPiece(msg.sender)) {
+            revert NotPiece();
+        }
+        if (msg.value != royalty + brokerShare) revert WrongPrice();
+        if (brokerShare > 0 && !isEligibleBroker(broker)) revert NotEligibleBroker();
+        balances[c.artist][ETH] += royalty;
+        if (brokerShare > 0) balances[broker][ETH] += brokerShare;
+        emit Resale(module, msg.sender, brokerShare > 0 ? broker : address(0), royalty, brokerShare);
+    }
+
     /// @notice Approved sale modules record an ETH sale of a module collection; the ETH comes with the call.
     function recordSale(address collection, address buyer, address broker) external payable {
         if (!saleModules[msg.sender]) revert NotSaleModule();
@@ -385,13 +425,18 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
         Collection storage c = collections[collection];
         uint256 artistShare = (amount * c.artistBps) / BPS;
         uint256 brokerShare;
-        if (broker != address(0) && broker != buyer && brokers[broker]) {
+        if (broker != buyer && isEligibleBroker(broker)) {
             brokerShare = (amount * c.brokerBps) / BPS;
             balances[broker][currency] += brokerShare;
         } else {
             broker = address(0);
         }
         uint256 houseShare = amount - artistShare - brokerShare; // rounding and any unearned broker share
+        if (c.houseBps == 0) {
+            // a collection with no house share (THE SOURCE): what the house would have kept goes to the artist
+            artistShare += houseShare;
+            houseShare = 0;
+        }
         balances[c.artist][currency] += artistShare;
         balances[address(this)][currency] += houseShare;
         emit Sale(collection, buyer, broker, currency, amount, brokerShare, houseShare, artistShare);

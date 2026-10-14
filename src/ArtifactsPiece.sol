@@ -16,6 +16,7 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
     uint256 public constant TOKEN_ID = 1;
     uint256 public constant ESCROW_TIMEOUT = 72 hours;
     uint16 public constant ROYALTY_BPS = 750;
+    uint16 public constant RESALE_BROKER_BPS = 250; // 2.5% of a resale to the broker who brought the buyer
     uint16 public constant BPS = 10_000;
 
     address public controller; // ArtifactsFactory (editions) or ArtifactsSource (THE SOURCE)
@@ -40,6 +41,7 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
         uint64 paidAt;
         bool keyPosted;
         bytes key;
+        address broker; // named by the buyer; paid at release if the ledger counts it as a broker
     }
 
     Escrow public escrow;
@@ -51,7 +53,9 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
     event EscrowPaid(address indexed buyer, uint256 price);
     event EscrowKeyPosted();
     event EscrowCancelled(address indexed buyer);
-    event EscrowReleased(address indexed seller, address indexed buyer, uint256 price, uint256 royalty);
+    event EscrowReleased(
+        address indexed seller, address indexed buyer, uint256 price, uint256 royalty, address broker, uint256 brokerShare
+    );
     event Revealed();
     event Withdrawn(address indexed to, uint256 amount);
 
@@ -164,8 +168,9 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
         emit Delisted();
     }
 
-    /// @notice The buyer pays the listed price into escrow and registers their viewing key in the same step.
-    function buy(bytes32 viewingKey) external payable nonReentrant {
+    /// @notice The buyer pays the listed price into escrow and registers their viewing key in the same step,
+    /// naming the broker who brought them (or the zero address).
+    function buy(bytes32 viewingKey, address broker) external payable nonReentrant {
         Escrow storage e = escrow;
         if (e.seller == address(0)) revert NotListed();
         if (e.buyer != address(0)) revert EscrowActive();
@@ -174,6 +179,7 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
         if (msg.sender == e.seller) revert NotEscrowBuyer();
         e.buyer = msg.sender;
         e.paidAt = uint64(block.timestamp);
+        e.broker = broker;
         viewingKeyOf[msg.sender] = viewingKey;
         emit ViewingKeyRegistered(msg.sender, viewingKey);
         emit EscrowPaid(msg.sender, msg.value);
@@ -199,6 +205,7 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
         address buyer = e.buyer;
         e.buyer = address(0);
         e.paidAt = 0;
+        e.broker = address(0);
         pendingWithdrawals[buyer] += refund;
         emit EscrowCancelled(buyer);
     }
@@ -211,19 +218,41 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
         if (msg.sender != e.buyer && block.timestamp < e.paidAt + ESCROW_TIMEOUT) revert TooEarly();
         address seller = e.seller;
         address buyer = e.buyer;
+        address broker = e.broker;
         uint256 price = e.price;
         bytes memory key = e.key;
         delete escrow;
         (address royaltyTo, uint256 royalty) = royaltyInfo(TOKEN_ID, price);
         if (royaltyTo == address(0)) royalty = 0;
-        pendingWithdrawals[seller] += price - royalty;
-        if (royalty > 0) pendingWithdrawals[royaltyTo] += royalty;
+        uint256 brokerShare;
+        if (broker != buyer && broker != seller && _isBroker(broker)) brokerShare = (price * RESALE_BROKER_BPS) / BPS;
+        else broker = address(0);
+        pendingWithdrawals[seller] += price - royalty - brokerShare;
+        // The royalty and broker share go to the ledger, so each party withdraws once from one place. If the
+        // ledger refuses (e.g. this piece's module was revoked), they stay here as pull payments instead.
+        uint256 toLedger = royalty + brokerShare;
+        if (toLedger > 0) {
+            try house.recordResale{value: toLedger}(broker, royalty, brokerShare) {}
+            catch {
+                if (royalty > 0) pendingWithdrawals[royaltyTo] += royalty;
+                if (brokerShare > 0) pendingWithdrawals[broker] += brokerShare;
+            }
+        }
         _releasing = true;
         _transfer(seller, buyer, TOKEN_ID);
         _releasing = false;
         wrappedKey = key;
         delete previousOwner; // the escrowed key is delivered; the paid seller keeps no re-key right
-        emit EscrowReleased(seller, buyer, price, royalty);
+        emit EscrowReleased(seller, buyer, price, royalty, broker, brokerShare);
+    }
+
+    function _isBroker(address broker) private view returns (bool) {
+        if (broker == address(0)) return false;
+        try house.isEligibleBroker(broker) returns (bool ok) {
+            return ok;
+        } catch {
+            return false;
+        }
     }
 
     function withdraw() external nonReentrant {

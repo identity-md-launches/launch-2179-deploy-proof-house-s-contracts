@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
+import {ArtHouse} from "../../src/ArtHouse.sol";
 import {Test} from "forge-std/Test.sol";
 import {Fixture} from "../Fixture.sol";
 import {ArtifactsPiece} from "../../src/ArtifactsPiece.sol";
@@ -36,7 +37,7 @@ contract EscrowHandler is Test {
         view
         returns (uint256 price, address seller, address buyer, uint64 paidAt, bool keyPosted)
     {
-        (price, seller, buyer, paidAt, keyPosted,) = piece.escrow();
+        (price, seller, buyer, paidAt, keyPosted,,) = piece.escrow();
     }
 
     function list(uint256 a, uint256 price) external {
@@ -75,7 +76,7 @@ contract EscrowHandler is Test {
         bool ok = seller != address(0) && buyer == address(0) && exact && key != bytes32(0) && actor != seller;
         vm.prank(actor);
         if (!ok) vm.expectRevert();
-        piece.buy{value: value}(key);
+        piece.buy{value: value}(key, address(0));
         if (ok) {
             paidIn += value;
             (,, address b, uint64 paidAt,) = _escrow();
@@ -93,7 +94,7 @@ contract EscrowHandler is Test {
         if (!ok) vm.expectRevert();
         piece.postEscrowKey(wrapped);
         if (ok) {
-            (,,,, bool posted,) = piece.escrow();
+            (,,,, bool posted,,) = piece.escrow();
             assertTrue(posted);
         }
     }
@@ -119,20 +120,22 @@ contract EscrowHandler is Test {
         (uint256 price, address seller, address buyer, uint64 paidAt, bool keyPosted) = _escrow();
         bool ok = buyer != address(0) && keyPosted && (actor == buyer || block.timestamp >= paidAt + 72 hours);
         uint256 sellerBefore = piece.pendingWithdrawals(seller);
-        uint256 royaltyBefore = piece.pendingWithdrawals(royaltyTo);
-        (,,,,, bytes memory keyBefore) = piece.escrow();
+        uint256 ledgerBefore = ArtHouse(address(piece.house())).balances(royaltyTo, address(0));
+        (,,,,, bytes memory keyBefore,) = piece.escrow();
         vm.prank(actor);
         if (!ok) vm.expectRevert();
         piece.release();
         if (ok) {
             uint256 royalty = (price * 750) / 10_000;
             assertEq(piece.ownerOf(1), buyer, "token to the buyer");
-            if (seller == royaltyTo) {
-                assertEq(piece.pendingWithdrawals(seller), sellerBefore + price, "seller is the royalty recipient");
-            } else {
-                assertEq(piece.pendingWithdrawals(seller), sellerBefore + price - royalty, "seller proceeds");
-                assertEq(piece.pendingWithdrawals(royaltyTo), royaltyBefore + royalty, "royalty credited");
-            }
+            // the royalty is credited to the artist in the ledger; the seller's proceeds stay on the piece
+            assertEq(piece.pendingWithdrawals(seller), sellerBefore + price - royalty, "seller proceeds");
+            assertEq(
+                ArtHouse(address(piece.house())).balances(royaltyTo, address(0)),
+                ledgerBefore + royalty,
+                "royalty credited in the ledger"
+            );
+            paidOut += royalty; // that ETH left the piece for the ledger
             assertEq(piece.previousOwner(), address(0), "a paid seller keeps no re-key right");
             assertEq(keccak256(piece.wrappedKey()), keccak256(keyBefore), "the escrowed key is delivered");
             (, address s, address b,,) = _escrow();
@@ -265,7 +268,7 @@ contract PieceEscrowInvariantTest is Fixture {
     }
 
     function _held() internal view returns (uint256) {
-        (uint256 price,, address buyer,,,) = piece.escrow();
+        (uint256 price,, address buyer,,,,) = piece.escrow();
         return buyer == address(0) ? 0 : price;
     }
 
@@ -293,7 +296,7 @@ contract PieceEscrowInvariantTest is Fixture {
 
     /// @dev While a buyer's payment sits in escrow the seller still owns the token.
     function invariant_escrowSellerOwns() public view {
-        (, address seller, address buyer,,,) = piece.escrow();
+        (, address seller, address buyer,,,,) = piece.escrow();
         if (buyer != address(0)) {
             assertEq(piece.ownerOf(1), seller, "seller keeps the token until release");
             assertTrue(seller != buyer);

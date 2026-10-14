@@ -277,9 +277,9 @@ contract ArtifactsPieceEscrowTest is Fixture {
         piece.list(2 ether);
         vm.prank(bob);
         vm.expectRevert(ArtifactsPiece.WrongPrice.selector);
-        piece.buy{value: 1 ether}(keccak256("bobvk"));
+        piece.buy{value: 1 ether}(keccak256("bobvk"), address(0));
         vm.prank(bob);
-        piece.buy{value: 2 ether}(keccak256("bobvk"));
+        piece.buy{value: 2 ether}(keccak256("bobvk"), address(0));
         assertEq(piece.viewingKeyOf(bob), keccak256("bobvk"));
         // token locked while in escrow
         vm.prank(alice);
@@ -299,18 +299,19 @@ contract ArtifactsPieceEscrowTest is Fixture {
         vm.prank(carol);
         vm.expectRevert(ArtifactsPiece.TooEarly.selector);
         piece.release();
+        uint256 artistBefore = house.balances(artist, address(0));
         vm.prank(bob);
         piece.release();
         assertEq(piece.ownerOf(1), bob);
         assertEq(piece.wrappedKey(), "rewrapped-to-bob");
         assertEq(piece.pendingWithdrawals(alice), 2 ether - 0.15 ether);
-        assertEq(piece.pendingWithdrawals(artist), 0.15 ether);
+        // the 7.5% royalty is credited in the ledger, where the artist withdraws everything at once
+        assertEq(piece.pendingWithdrawals(artist), 0);
+        assertEq(house.balances(artist, address(0)) - artistBefore, 0.15 ether);
         uint256 before = alice.balance;
         vm.prank(alice);
         piece.withdraw();
         assertEq(alice.balance - before, 1.85 ether);
-        vm.prank(artist);
-        piece.withdraw();
         assertEq(address(piece).balance, 0);
     }
 
@@ -318,7 +319,7 @@ contract ArtifactsPieceEscrowTest is Fixture {
         vm.prank(alice);
         piece.list(1 ether);
         vm.prank(bob);
-        piece.buy{value: 1 ether}(keccak256("bobvk"));
+        piece.buy{value: 1 ether}(keccak256("bobvk"), address(0));
         vm.prank(alice);
         piece.postEscrowKey("k");
         vm.warp(vm.getBlockTimestamp() + 72 hours - 1);
@@ -335,7 +336,7 @@ contract ArtifactsPieceEscrowTest is Fixture {
         vm.prank(alice);
         piece.list(1 ether);
         vm.prank(bob);
-        piece.buy{value: 1 ether}(keccak256("bobvk"));
+        piece.buy{value: 1 ether}(keccak256("bobvk"), address(0));
         vm.prank(alice);
         vm.expectRevert(ArtifactsPiece.EscrowActive.selector);
         piece.delist();
@@ -353,7 +354,7 @@ contract ArtifactsPieceEscrowTest is Fixture {
         piece.delist();
         vm.prank(carol);
         vm.expectRevert(ArtifactsPiece.NotListed.selector);
-        piece.buy{value: 1 ether}(keccak256("c"));
+        piece.buy{value: 1 ether}(keccak256("c"), address(0));
     }
 
     function test_plainTransferClearsKey_previousOwnerRekeys() public {
@@ -378,7 +379,7 @@ contract ArtifactsPieceEscrowTest is Fixture {
         piece.list(1 ether);
         vm.prank(bob);
         piece.transferFrom(bob, carol, 1);
-        (, address seller,,,,) = piece.escrow();
+        (, address seller,,,,,) = piece.escrow();
         assertEq(seller, address(0));
     }
 
@@ -387,7 +388,7 @@ contract ArtifactsPieceEscrowTest is Fixture {
         vm.prank(alice);
         piece.list(2 ether);
         vm.prank(bob);
-        piece.buy{value: 2 ether}(keccak256("bobvk"));
+        piece.buy{value: 2 ether}(keccak256("bobvk"), address(0));
         vm.prank(alice);
         piece.postEscrowKey("rewrapped-for-bob");
         vm.prank(bob);
@@ -432,7 +433,7 @@ contract ArtifactsPieceEscrowTest is Fixture {
         vm.prank(alice);
         piece.list(1 ether);
         vm.prank(bob);
-        piece.buy{value: 1 ether}(keccak256("bobvk"));
+        piece.buy{value: 1 ether}(keccak256("bobvk"), address(0));
         vm.prank(alice);
         vm.expectRevert(ArtifactsPiece.KeyNotPosted.selector);
         piece.postEscrowKey("");
@@ -450,7 +451,7 @@ contract ArtifactsPieceEscrowTest is Fixture {
         piece.list(1 ether);
         vm.prank(bob);
         vm.expectRevert(ArtifactsPiece.NoViewingKey.selector);
-        piece.buy{value: 1 ether}(bytes32(0));
+        piece.buy{value: 1 ether}(bytes32(0), address(0));
     }
 
     function test_reentrancyOnEscrowWithdrawBlocked() public {
@@ -458,7 +459,7 @@ contract ArtifactsPieceEscrowTest is Fixture {
         vm.deal(address(r), 5 ether);
         vm.prank(alice);
         piece.list(1 ether);
-        r.call(address(piece), 1 ether, abi.encodeWithSelector(ArtifactsPiece.buy.selector, keccak256("r")));
+        r.call(address(piece), 1 ether, abi.encodeWithSelector(ArtifactsPiece.buy.selector, keccak256("r"), address(0)));
         r.call(address(piece), 0, abi.encodeWithSelector(ArtifactsPiece.cancel.selector));
         r.set(address(piece), abi.encodeWithSelector(ArtifactsPiece.withdraw.selector));
         r.call(address(piece), 0, abi.encodeWithSelector(ArtifactsPiece.withdraw.selector));

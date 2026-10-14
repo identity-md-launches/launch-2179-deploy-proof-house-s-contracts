@@ -173,6 +173,11 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard {
         emit Settled(highBidder, highBid, piece);
     }
 
+    /// @notice True only for THE SOURCE's own piece contract (the ledger checks resale callers with it).
+    function isPiece(address piece) external view returns (bool) {
+        return piece != address(0) && piece == pieceContract;
+    }
+
     function auctionState()
         external
         view

@@ -13,6 +13,8 @@ interface IERC2981 {
 
 interface IArtHouse {
     function recordSale(address collection, address buyer, address broker) external payable;
+    function recordResale(address broker, uint256 royalty, uint256 brokerShare) external payable;
+    function isEligibleBroker(address broker) external view returns (bool);
     function royaltyFor(address collection, uint256 salePrice) external view returns (address, uint256);
     function pieceMetadata(address collection, uint256 pieceId)
         external
@@ -59,6 +61,19 @@ interface IArtifactsPiece {
         bytes calldata wrappedKey,
         bool isSource
     ) external;
+}
+
+/// @notice A sale module that deploys piece contracts answers whether a contract is one of its pieces.
+interface IPieceRegistry {
+    function isPiece(address piece) external view returns (bool);
+}
+
+interface IPieceController {
+    function controller() external view returns (address);
+}
+
+interface IBalanceOf {
+    function balanceOf(address account) external view returns (uint256);
 }
 
 /// @notice What an ArtifactsPiece needs from THE SOURCE's controller to serve the revealed tokenURI.

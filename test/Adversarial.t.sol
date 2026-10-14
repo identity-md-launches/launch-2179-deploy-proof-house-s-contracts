@@ -188,10 +188,11 @@ contract ArtHouseEdgeTest is Fixture {
         assertEq(house.balances(broker, address(0)), 1 ether);
         assertEq(house.balances(artist, address(0)), 0);
         assertEq(house.balances(address(house), address(0)), 0);
-        // the same split without an eligible broker sends everything to the house
+        // the same split without an eligible broker: with no house share, the unearned share goes to the artist
         vm.prank(bob);
         house.mint{value: 1 ether}(address(col), 1, bob);
-        assertEq(house.balances(address(house), address(0)), 1 ether);
+        assertEq(house.balances(address(house), address(0)), 0);
+        assertEq(house.balances(artist, address(0)), 1 ether);
     }
 
     /// forge-config: default.fuzz.runs = 512
@@ -215,13 +216,19 @@ contract ArtHouseEdgeTest is Fixture {
         uint256 br = house.balances(broker, address(0));
         uint256 h = house.balances(address(house), address(0));
         assertEq(a + br + h, amount, "conservation");
-        assertEq(a, (uint256(amount) * artistBps) / 10_000, "artist share floors");
         if (b == broker) {
             assertEq(br, (uint256(amount) * brokerBps) / 10_000, "broker share floors");
         } else {
             assertEq(br, 0, "no commission for the buyer or an unapproved broker");
         }
-        assertGe(h, (uint256(amount) * houseBps) / 10_000, "house takes the rounding");
+        if (houseBps == 0) {
+            // no house share: the artist takes the rounding and any unearned broker share
+            assertEq(h, 0, "no house share");
+            assertEq(a, amount - br, "artist takes the rest");
+        } else {
+            assertEq(a, (uint256(amount) * artistBps) / 10_000, "artist share floors");
+            assertGe(h, (uint256(amount) * houseBps) / 10_000, "house takes the rounding");
+        }
         assertEq(address(house).balance, amount);
     }
 
@@ -930,10 +937,10 @@ contract PieceEdgeTest is Fixture {
         piece.delist();
         vm.prank(alice);
         vm.expectRevert(ArtifactsPiece.NotEscrowBuyer.selector);
-        piece.buy{value: 1 ether}(keccak256("self")); // seller cannot buy from themself
+        piece.buy{value: 1 ether}(keccak256("self"), address(0)); // seller cannot buy from themself
         vm.prank(bob);
         vm.expectRevert(ArtifactsPiece.NoViewingKey.selector);
-        piece.buy{value: 1 ether}(bytes32(0));
+        piece.buy{value: 1 ether}(bytes32(0), address(0));
         vm.prank(alice);
         vm.expectRevert(ArtifactsPiece.NoEscrowBuyer.selector);
         piece.postEscrowKey("k");
@@ -941,10 +948,10 @@ contract PieceEdgeTest is Fixture {
         vm.expectRevert(ArtifactsPiece.NoEscrowBuyer.selector);
         piece.release();
         vm.prank(bob);
-        piece.buy{value: 1 ether}(keccak256("bob"));
+        piece.buy{value: 1 ether}(keccak256("bob"), address(0));
         vm.prank(carol);
         vm.expectRevert(ArtifactsPiece.EscrowActive.selector);
-        piece.buy{value: 1 ether}(keccak256("carol"));
+        piece.buy{value: 1 ether}(keccak256("carol"), address(0));
         vm.prank(alice);
         piece.postEscrowKey("k");
         vm.prank(alice);
@@ -965,7 +972,7 @@ contract PieceEdgeTest is Fixture {
         vm.prank(alice);
         piece.list(1 ether);
         vm.prank(bob);
-        piece.buy{value: 1 ether}(keccak256("bob"));
+        piece.buy{value: 1 ether}(keccak256("bob"), address(0));
         vm.prank(alice);
         piece.postEscrowKey("k");
         uint256 paidAt = vm.getBlockTimestamp();
@@ -999,24 +1006,30 @@ contract PieceEdgeTest is Fixture {
         vm.prank(alice);
         piece.list(2 ether);
         vm.prank(bob);
-        piece.buy{value: 2 ether}(keccak256("bob"));
+        piece.buy{value: 2 ether}(keccak256("bob"), address(0));
         vm.prank(bob);
         piece.cancel();
         vm.prank(bob);
         vm.expectRevert(ArtifactsPiece.NotEscrowBuyer.selector);
         piece.cancel(); // twice
         vm.prank(carol);
-        piece.buy{value: 2 ether}(keccak256("carol"));
+        piece.buy{value: 2 ether}(keccak256("carol"), address(0));
         vm.prank(artist);
         house.setPayout(makeAddr("payout"));
         vm.prank(alice);
         piece.postEscrowKey("k");
+        uint256 artistBefore = house.balances(artist, address(0));
         vm.prank(carol);
         piece.release();
-        assertEq(piece.pendingWithdrawals(makeAddr("payout")), 0.15 ether, "royalty follows the artist's payout");
+        // the royalty is credited to the artist in the ledger; withdrawing pays the payout the artist chose
+        assertEq(house.balances(artist, address(0)) - artistBefore, 0.15 ether, "royalty credited to the artist");
+        uint256 payoutBefore = makeAddr("payout").balance;
+        vm.prank(artist);
+        house.withdraw(address(0));
+        assertEq(makeAddr("payout").balance - payoutBefore, artistBefore + 0.15 ether, "royalty follows the artist's payout");
         assertEq(piece.pendingWithdrawals(alice), 1.85 ether);
         assertEq(piece.pendingWithdrawals(bob), 2 ether);
-        assertEq(address(piece).balance, 4 ether);
+        assertEq(address(piece).balance, 3.85 ether);
         vm.prank(bob);
         piece.withdraw();
         vm.prank(bob);
@@ -1034,7 +1047,7 @@ contract PieceEdgeTest is Fixture {
         piece.safeTransferFrom(alice, address(re), 1, "");
         assertEq(piece.ownerOf(1), address(re));
         assertTrue(re.listedDuringHook(), "the new owner may act in its receiver hook");
-        (, address seller,,,,) = piece.escrow();
+        (, address seller,,,,,) = piece.escrow();
         assertEq(seller, address(re));
         assertEq(piece.previousOwner(), alice);
         assertEq(piece.wrappedKey(), "");
@@ -1253,13 +1266,14 @@ contract SourceEdgeTest is Fixture {
         vm.prank(alice);
         piece.list(10 ether);
         vm.prank(bob);
-        piece.buy{value: 10 ether}(keccak256("bob"));
+        piece.buy{value: 10 ether}(keccak256("bob"), address(0));
         vm.prank(alice);
         piece.postEscrowKey("k");
+        uint256 artistBefore = house.balances(artist, address(0));
         vm.prank(bob);
         piece.release();
         assertEq(piece.ownerOf(1), bob);
-        assertEq(piece.pendingWithdrawals(artist), 0.75 ether);
+        assertEq(house.balances(artist, address(0)) - artistBefore, 0.75 ether);
         vm.prank(bob);
         piece.setRevealed();
         assertTrue(piece.revealed());

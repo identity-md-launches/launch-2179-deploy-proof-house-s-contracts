@@ -55,6 +55,8 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard {
     mapping(address => bytes32) public viewingKeyOf;
     mapping(uint256 => bytes) private _wrappedKey;
     mapping(uint256 => address) public pieceContract;
+    /// @notice True for every piece contract this factory deployed (the ledger checks resale callers with it).
+    mapping(address => bool) public isPiece;
 
     event PieceSet(uint256 indexed pieceId, bytes32 commitment, address ciphertext);
     event Locked();
@@ -248,6 +250,7 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard {
         if (wrapped.length == 0) revert KeyNotPosted();
         piece = Clones.clone(pieceImplementation);
         pieceContract[edition] = piece;
+        isPiece[piece] = true;
         PieceData storage p = _pieces[edition];
         IArtifactsPiece(piece)
             .initialize(

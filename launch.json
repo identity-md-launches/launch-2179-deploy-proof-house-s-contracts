@@ -12,7 +12,7 @@
       "constructorArgs": [
         "$owner",
         "$contract:ArtStorage",
-        "0x44a1cd38474fb1748400e7deb5f8d786cce3f89a"
+        "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7"
       ]
     },
     {
@@ -34,7 +34,15 @@
         "$contract:ArtHouse",
         "$contract:ArtifactsPiece"
       ]
+    },
+    {
+      "contract": "BrokerPass",
+      "constructorArgs": [
+        "0x0000ec93127baa929e58e97dd0095a2bfb38ec1d",
+        "$contract:ArtifactsFactory",
+        "$contract:ArtifactsSource"
+      ]
     }
   ],
-  "notes": "Proof House on Sepolia, first collection ARTIFACTS (255 editions + THE SOURCE). No fungible token or pool; IMD (0x44a1cd38474fb1748400e7deb5f8d786cce3f89a) is the existing ERC-20 buyers may pay with. ArtStorage(owner) holds SSTORE2 chunks for plain SVG collections, writable only by ArtHouse after the owner's one-time setHouse. ArtHouse(owner, ArtStorage, IMD) is the ledger: artists, brokers, approved sale modules, per-collection basis-point splits (default broker 15%, house 15%, artist 70%), per-currency (ETH, IMD) pull balances, 7.5% ERC-2981 royalties; its constructor deploys the locked ArtCollection clone implementation. ArtifactsPiece() is the locked EIP-1167 implementation of each one-token ARTIFACTS piece (ERC-721 + ERC-2981). ArtifactsFactory(owner, ArtHouse, ArtifactsPiece) publishes and locks the 255 editions' traits, encrypted seeds and key commitments, sells them at one ETH price through the ledger, assigns editions by Chainlink VRF v2.5 (coordinator, key hash, subscription set once by the owner after deployment), handles claims and resale escrow. ArtifactsSource(owner, ArtHouse, ArtifactsPiece) stores THE SOURCE's payload, runs its single-lot ETH auction and settles it through the ledger; it was split from ArtifactsFactory to stay under EIP-170. The owner is the curator, with two-step ownership and no renounce. After deployment the curator calls ArtStorage.setHouse(ArtHouse) and approves and registers ArtifactsFactory and ArtifactsSource as sale modules on ArtHouse (setSaleModule, registerModuleCollection); these are owner operations, not launch initialization calls."
+  "notes": "Proof House on Ethereum mainnet, first drop ARTIFACTS (THE SOURCE by auction first, then 255 editions). No fungible token or pool. IMD (0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7) is the existing ERC-20 buyers may pay with for plain SVG collections. BrokerPass: 100 free passes, claimed with an ARTIFACTS piece or an identity.md seat (0x0000ec93127baa929e58e97dd0095a2bfb38ec1d); holders are Proof House brokers. After deployment the owner calls ArtHouse.setBrokerPass, approves the artist, registers ArtifactsFactory and ArtifactsSource as sale modules and module collections, sets THE SOURCE's split to 15/0/85, configures VRF, and calls ArtStorage.setHouse."
 }
