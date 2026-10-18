@@ -203,11 +203,11 @@ contract BrokerPassTest is Fixture {
         seats.mint(bob, 1);
         vm.prank(bob);
         pass.claimWithSeat(1);
-        uint256 artistBefore = house.balances(artist, ETH);
+        uint256 artistBefore = _artistEth();
         uint256 burnBefore = house.balances(house.BUYBACK(), ETH);
         _buyAndAssign(bob, bob, 5);
         assertEq(house.balances(bob, ETH), 0.15 ether, "15% back to the pass holder");
-        assertEq(house.balances(artist, ETH) - artistBefore, 0.75 ether, "artist 75% either way");
+        assertEq(_artistEth() - artistBefore, 0.75 ether, "artist 75% either way");
         assertEq(house.balances(house.BUYBACK(), ETH) - burnBefore, 0.05 ether, "only the 5% burns");
     }
 
@@ -228,22 +228,22 @@ contract BrokerPassTest is Fixture {
         seats.mint(agent, 1);
         vm.prank(agent);
         pass.claimWithSeat(1);
-        uint256 artistBefore = house.balances(artist, ETH);
+        uint256 artistBefore = _artistEth();
         uint256 houseBefore = house.balances(address(house), ETH);
         _sellSource(bob, agent, 2 ether);
         assertEq(house.balances(agent, ETH), 0.3 ether);
-        assertEq(house.balances(artist, ETH) - artistBefore, 1.7 ether);
+        assertEq(_artistEth() - artistBefore, 1.7 ether);
         assertEq(house.balances(address(house), ETH), houseBefore);
     }
 
     function test_sourceSplit_noBrokerBurns() public {
         vm.prank(curator);
         house.setSplit(address(source), 1500, 0, 8500, 0);
-        uint256 artistBefore = house.balances(artist, ETH);
+        uint256 artistBefore = _artistEth();
         uint256 houseBefore = house.balances(address(house), ETH);
         uint256 burnBefore = house.balances(house.BUYBACK(), ETH);
         _sellSource(bob, address(0), 2 ether);
-        assertEq(house.balances(artist, ETH) - artistBefore, 1.7 ether, "artist 85 either way");
+        assertEq(_artistEth() - artistBefore, 1.7 ether, "artist 85 either way");
         assertEq(house.balances(house.BUYBACK(), ETH) - burnBefore, 0.3 ether, "the unclaimed 15 buys back and burns");
         assertEq(house.balances(address(house), ETH), houseBefore);
     }
@@ -265,11 +265,11 @@ contract BrokerPassTest is Fixture {
         vm.prank(agent);
         pass.claimWithSeat(1);
         ArtifactsPiece piece = _claim(alice, _buyAndAssign(alice, address(0), 9));
-        uint256 artistBefore = house.balances(artist, ETH);
+        uint256 artistBefore = _artistEth();
         _listAndSell(piece, alice, bob, agent, 4 ether);
         assertEq(piece.ownerOf(1), bob);
         assertEq(house.balances(agent, ETH), 0.1 ether); // 2.5%
-        assertEq(house.balances(artist, ETH) - artistBefore, 0.3 ether); // 7.5%
+        assertEq(_artistEth() - artistBefore, 0.3 ether); // 7.5%
         assertEq(piece.pendingWithdrawals(alice), 3.6 ether + 0.4 ether); // 90%, and the deposit back
         assertEq(address(piece).balance, 4 ether);
         vm.prank(agent);
@@ -299,11 +299,11 @@ contract BrokerPassTest is Fixture {
         vm.prank(bob);
         pass.claimWithSeat(1);
         ArtifactsPiece piece = _claim(alice, _buyAndAssign(alice, address(0), 9));
-        uint256 artistBefore = house.balances(artist, ETH);
+        uint256 artistBefore = _artistEth();
         _listAndSell(piece, alice, bob, bob, 4 ether);
         assertEq(piece.ownerOf(1), bob);
         assertEq(house.balances(bob, ETH), 0.1 ether, "2.5% back to the buyer's pass");
-        assertEq(house.balances(artist, ETH) - artistBefore, 0.3 ether, "royalty 7.5% either way");
+        assertEq(_artistEth() - artistBefore, 0.3 ether, "royalty 7.5% either way");
         assertEq(piece.pendingWithdrawals(alice), 3.6 ether + 0.4 ether, "seller 90%, and the deposit back");
     }
 

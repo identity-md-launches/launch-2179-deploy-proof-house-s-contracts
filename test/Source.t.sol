@@ -142,10 +142,10 @@ contract ArtifactsSourceTest is Fixture {
         assertTrue(piece.isSource());
         assertEq(source.pieceContract(), address(piece));
         // proceeds went through the ledger (no broker on the winning bid => the broker share buys back and burns)
-        assertEq(house.balances(artist, address(0)), 1.5 ether);
+        assertEq(_artistEth(), 1.5 ether);
         assertEq(house.balances(address(house), address(0)), 0.1 ether);
         assertEq(house.balances(house.BUYBACK(), address(0)), 0.4 ether);
-        assertEq(address(house).balance, 2 ether);
+        assertEq(address(house).balance + artist.balance, 2 ether, "the ledger, and the artist paid directly");
         assertEq(address(source).balance, 1.05 ether); // bob's refund still pending
         vm.expectRevert(ArtifactsSource.AuctionNotOpen.selector);
         source.settle();

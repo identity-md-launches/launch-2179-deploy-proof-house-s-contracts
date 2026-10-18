@@ -125,26 +125,27 @@ contract ArtHouseEdgeTest is Fixture {
         vm.prank(curator);
         vm.expectRevert(ArtHouse.NotApprovedArtist.selector);
         house.registerModuleCollection(makeAddr("mod"), artist);
+        assertEq(artist.balance, 0.75 ether, "paid straight to the artist at the sale");
         vm.prank(artist);
         house.setPayout(carol);
-        vm.prank(artist);
-        house.withdraw(address(0));
-        assertEq(carol.balance, 1000 ether + 0.75 ether, "earnings follow the payout address");
         (address to,) = col.royaltyInfo(0, 1 ether);
         assertEq(to, carol);
     }
 
+    /// @dev A payout address that refuses ETH: the sale still goes through and the artist's share waits in the
+    /// ledger; withdrawing to it fails and keeps it; pointed at a wallet, it pays.
     function test_withdrawToRevertingPayoutKeepsBalance() public {
         _open(1 ether, 0);
-        vm.prank(alice);
-        house.mint{value: 1 ether}(address(col), 0, address(0));
         address sink = address(new RejectingReceiver()); // no receive(): ETH transfer fails
         vm.prank(artist);
         house.setPayout(sink);
+        vm.prank(alice);
+        house.mint{value: 1 ether}(address(col), 0, address(0)); // the sale doesn't fail because of the artist
+        assertEq(house.balances(artist, address(0)), 0.75 ether, "the share waits in the ledger");
         vm.prank(artist);
         vm.expectRevert(ArtHouse.TransferFailed.selector);
         house.withdraw(address(0));
-        assertEq(house.balances(artist, address(0)), 0.75 ether, "balance intact after a failed payout");
+        assertEq(_artistEth(), 0.75 ether, "balance intact after a failed payout");
         vm.prank(artist);
         house.setPayout(artist);
         vm.prank(artist);
@@ -209,14 +210,14 @@ contract ArtHouseEdgeTest is Fixture {
         vm.deal(address(factory), 2 ether);
         vm.prank(address(factory));
         house.recordSale{value: 1 ether}(address(factory), alice, broker);
-        assertEq(house.balances(artist, address(0)), 0.75 ether, "artist 75");
+        assertEq(_artistEth(), 0.75 ether, "artist 75");
         assertEq(house.balances(broker, address(0)), 0.15 ether, "agent 15");
         assertEq(house.balances(address(house), address(0)), 0.05 ether, "house 5");
         assertEq(house.balances(house.BUYBACK(), address(0)), 0.05 ether, "burn 5");
         // no agent on the sale: their 15 is burned too
         vm.prank(address(factory));
         house.recordSale{value: 1 ether}(address(factory), alice, address(0));
-        assertEq(house.balances(artist, address(0)), 1.5 ether);
+        assertEq(_artistEth(), 1.5 ether);
         assertEq(house.balances(broker, address(0)), 0.15 ether);
         assertEq(house.balances(address(house), address(0)), 0.1 ether);
         assertEq(house.balances(house.BUYBACK(), address(0)), 0.25 ether, "5 + 20");
@@ -266,7 +267,7 @@ contract ArtHouseEdgeTest is Fixture {
         vm.deal(address(factory), amount);
         vm.prank(address(factory));
         house.recordSale{value: amount}(address(factory), alice, b);
-        uint256 a = house.balances(artist, address(0));
+        uint256 a = _artistEth();
         uint256 br = house.balances(broker, address(0));
         uint256 h = house.balances(address(house), address(0));
         uint256 bu = house.balances(house.BUYBACK(), address(0));
@@ -288,7 +289,8 @@ contract ArtHouseEdgeTest is Fixture {
             assertEq(a, (uint256(amount) * artistBps) / 10_000, "artist share floors");
             assertGe(h, (uint256(amount) * houseBps) / 10_000, "house takes the rounding");
         }
-        assertEq(address(house).balance, amount);
+        // the house holds everything but what went straight to the artist
+        assertEq(address(house).balance, amount - (a - house.balances(artist, address(0))));
     }
 
     /// forge-config: default.fuzz.runs = 256
@@ -309,7 +311,7 @@ contract ArtHouseEdgeTest is Fixture {
         vm.prank(address(factory));
         house.recordSale{value: p2}(address(factory), carol, broker);
 
-        uint256 artistEth = house.balances(artist, address(0));
+        uint256 artistEth = _artistEth();
         uint256 brokerEth = house.balances(broker, address(0));
         uint256 houseEth = house.balances(address(house), address(0));
         uint256 artistImd = house.balances(artist, address(imd));
@@ -321,7 +323,7 @@ contract ArtHouseEdgeTest is Fixture {
         assertEq(house.balances(broker, address(imd)), 0);
 
         // a floored share of zero (tiny prices) has nothing to withdraw; everything else drains exactly
-        _withdrawAll(artist, address(0), artistEth);
+        _withdrawAll(artist, address(0), house.balances(artist, address(0))); // paid directly at the sale: nothing waits
         _withdrawAll(artist, address(imd), artistImd);
         _withdrawAll(broker, address(0), brokerEth);
         _withdrawAll(address(house), address(0), houseEth);
@@ -801,7 +803,7 @@ contract ArtifactsEdgeTest is Fixture {
         assertEq(factory.sold(), 1, "re-requests are not purchases");
         assertEq(factory.assigned(), 0);
         assertEq(factory.remaining(), 254);
-        assertEq(address(house).balance, 1 ether, "no second payment");
+        assertEq(address(house).balance + artist.balance, 1 ether, "no second payment");
         vrf.fulfill(id2, 77);
         uint256 e = factory.requestEdition(id2);
         assertEq(e, 77 % 255 + 1);
@@ -1076,15 +1078,12 @@ contract PieceEdgeTest is Fixture {
         vm.prank(artist);
         house.setPayout(makeAddr("payout"));
         _postKey(piece, alice, (2 ether) / 10);
-        uint256 artistBefore = house.balances(artist, address(0));
+        uint256 payoutBefore = makeAddr("payout").balance;
         vm.prank(carol);
         piece.release();
-        // the royalty is credited to the artist in the ledger; withdrawing pays the payout the artist chose
-        assertEq(house.balances(artist, address(0)) - artistBefore, 0.15 ether, "royalty credited to the artist");
-        uint256 payoutBefore = makeAddr("payout").balance;
-        vm.prank(artist);
-        house.withdraw(address(0));
-        assertEq(makeAddr("payout").balance - payoutBefore, artistBefore + 0.15 ether, "royalty follows the artist's payout");
+        // the royalty goes straight to the payout address the artist chose
+        assertEq(makeAddr("payout").balance - payoutBefore, 0.15 ether, "royalty follows the artist's payout");
+        assertEq(house.balances(artist, address(0)), 0, "nothing waits in the ledger");
         assertEq(piece.pendingWithdrawals(alice), 1.85 ether + 0.2 ether, "proceeds and the deposit back");
         assertEq(piece.pendingWithdrawals(bob), 2 ether);
         assertEq(address(piece).balance, 4.05 ether);
@@ -1308,7 +1307,7 @@ contract SourceEdgeTest is Fixture {
         vm.warp(vm.getBlockTimestamp() + 1 hours);
         ArtifactsPiece piece = ArtifactsPiece(source.settle());
         assertEq(house.balances(broker, address(0)), 0.3 ether, "broker on the winning bid is paid");
-        assertEq(house.balances(artist, address(0)), 1.5 ether);
+        assertEq(_artistEth(), 1.5 ether);
         assertEq(house.balances(address(house), address(0)), 0.1 ether);
         assertEq(house.balances(house.BUYBACK(), address(0)), 0.1 ether);
         assertEq(address(source).balance, 0);
@@ -1329,11 +1328,11 @@ contract SourceEdgeTest is Fixture {
         vm.prank(bob);
         piece.buy{value: 10 ether}(_vk("bob"), address(0));
         _postKey(piece, alice, (10 ether) / 10);
-        uint256 artistBefore = house.balances(artist, address(0));
+        uint256 artistBefore = _artistEth();
         vm.prank(bob);
         piece.release();
         assertEq(piece.ownerOf(1), bob);
-        assertEq(house.balances(artist, address(0)) - artistBefore, 0.75 ether);
+        assertEq(_artistEth() - artistBefore, 0.75 ether);
         vm.prank(bob);
         piece.reveal(SOURCE_KEY);
         assertTrue(piece.revealed());

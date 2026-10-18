@@ -268,7 +268,7 @@ contract ArtifactsFactoryTest is Fixture {
         assertEq(factory.mintedBy(alice), 3);
         assertEq(factory.allowanceOf(alice), 2);
         assertEq(house.balances(broker, address(0)), 0.45 ether);
-        assertEq(house.balances(artist, address(0)), 2.25 ether);
+        assertEq(_artistEth(), 2.25 ether);
         for (uint256 i; i < 3; ++i) {
             assertEq(factory.requestBuyer(ids[i]), alice);
             vrf.fulfill(ids[i], i);
@@ -336,11 +336,11 @@ contract ArtifactsFactoryTest is Fixture {
         vm.expectRevert(ArtifactsFactory.SoldOut.selector);
         factory.buy{value: 1 ether}(address(0));
         // ledger holds exactly the proceeds, split per sale
-        assertEq(address(house).balance, 255 ether);
-        uint256 total = house.balances(artist, address(0)) + house.balances(broker, address(0))
+        assertEq(address(house).balance + artist.balance, 255 ether, "the ledger, and the artist paid directly");
+        uint256 total = _artistEth() + house.balances(broker, address(0))
             + house.balances(address(house), address(0)) + house.balances(house.BUYBACK(), address(0));
         assertEq(total, 255 ether);
-        assertEq(house.balances(artist, address(0)), 255 ether * 7500 / 10_000);
+        assertEq(_artistEth(), 255 ether * 7500 / 10_000);
         assertEq(house.balances(broker, address(0)), 85 * 0.15 ether);
     }
 
@@ -496,7 +496,7 @@ contract ArtifactsPieceEscrowTest is Fixture {
         vm.prank(carol);
         vm.expectRevert(ArtifactsPiece.TooEarly.selector);
         piece.release();
-        uint256 artistBefore = house.balances(artist, address(0));
+        uint256 artistBefore = _artistEth();
         vm.prank(bob);
         piece.release();
         assertEq(piece.ownerOf(1), bob);
@@ -504,7 +504,7 @@ contract ArtifactsPieceEscrowTest is Fixture {
         assertEq(piece.pendingWithdrawals(alice), 2 ether - 0.15 ether + 0.2 ether, "proceeds, and the deposit back");
         // the 7.5% royalty is credited in the ledger, where the artist withdraws everything at once
         assertEq(piece.pendingWithdrawals(artist), 0);
-        assertEq(house.balances(artist, address(0)) - artistBefore, 0.15 ether);
+        assertEq(_artistEth() - artistBefore, 0.15 ether);
         uint256 before = alice.balance;
         vm.prank(alice);
         piece.withdraw();

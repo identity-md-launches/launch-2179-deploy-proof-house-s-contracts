@@ -121,7 +121,9 @@ contract LedgerHandler is Test {
         address[] memory p = parties();
         for (uint256 i; i < p.length; ++i) {
             uint256 expected;
-            if (p[i] == artist) expected += artistShare;
+            // an artist's ETH goes straight to their payout address (a wallet here); other currencies wait in the ledger
+            if (p[i] == artist && currency != address(0)) expected += artistShare;
+            if (p[i] == artist && currency == address(0)) ethOut += artistShare; // it left the ledger at the sale
             if (eligible && p[i] == broker) expected += brokerShare;
             if (p[i] == address(house)) expected += houseShare;
             if (p[i] == house.BUYBACK()) expected += burnShare;

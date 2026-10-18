@@ -288,11 +288,11 @@ contract ArtifactsFactoryInvariantTest is Fixture {
 
     /// @dev Every purchase's ETH sits in the ledger, split and owed to artist / broker / house.
     function invariant_ledgerHoldsEveryPurchase() public view {
-        assertEq(address(house).balance, h.paid());
+        assertEq(address(house).balance + artist.balance, h.paid(), "the ledger, and the artist paid directly");
         assertEq(address(factory).balance, 0, "factory never keeps ETH");
         uint256 owed = house.balances(artist, address(0)) + house.balances(broker, address(0))
             + house.balances(address(house), address(0)) + house.balances(house.BUYBACK(), address(0));
-        assertEq(owed, h.paid());
+        assertEq(owed + artist.balance, h.paid(), "owed in the ledger, plus the artist's share paid directly");
     }
 
     /// @dev A claimed edition's token belongs to its buyer and carries the published commitment and ciphertext.

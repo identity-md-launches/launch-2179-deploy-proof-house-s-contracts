@@ -158,6 +158,7 @@ contract EscrowHandler is Test {
         bool ok = buyer != address(0) && keyPosted && (actor == buyer || block.timestamp >= keyAt + 72 hours);
         uint256 sellerBefore = piece.pendingWithdrawals(seller);
         uint256 ledgerBefore = ArtHouse(address(piece.house())).balances(royaltyTo, address(0));
+        uint256 ethBefore = royaltyTo.balance;
         (,,,,, bytes memory keyBefore,,,,) = piece.escrow();
         vm.prank(actor);
         if (!ok) vm.expectRevert();
@@ -165,12 +166,12 @@ contract EscrowHandler is Test {
         if (ok) {
             uint256 royalty = (price * 750) / 10_000;
             assertEq(piece.ownerOf(1), buyer, "token to the buyer");
-            // the royalty is credited to the artist in the ledger; the seller's proceeds stay on the piece
+            // the royalty goes straight to the artist (or waits in the ledger); the seller's proceeds stay on the piece
             assertEq(piece.pendingWithdrawals(seller), sellerBefore + price - royalty + deposit, "seller proceeds and deposit");
             assertEq(
-                ArtHouse(address(piece.house())).balances(royaltyTo, address(0)),
-                ledgerBefore + royalty,
-                "royalty credited in the ledger"
+                ArtHouse(address(piece.house())).balances(royaltyTo, address(0)) - ledgerBefore + (royaltyTo.balance - ethBefore),
+                royalty,
+                "royalty to the artist"
             );
             paidOut += royalty; // that ETH left the piece for the ledger
             assertEq(piece.previousOwner(), address(0), "a paid seller keeps no re-key right");

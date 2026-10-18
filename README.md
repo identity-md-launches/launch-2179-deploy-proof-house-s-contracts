@@ -157,9 +157,11 @@ previewURI)` is open to anyone; the curator `decideSubmission`.
 Every sale is split in basis points per collection (house takes rounding); a broker earns if the curator approved
 it (`setBroker`) or it holds a Broker Pass at the time of the sale (`isEligibleBroker`), otherwise its share goes to
 the IMD buyback. A pass holder may name itself on its own bid, mint or resale purchase (a stated perk of the pass); a
-seller can never broker its own resale. Balances are per currency (ETH = address(0), IMD);
-artists and brokers `withdraw(currency)` their own (artists to their payout address); `withdrawHouse` pays the
-current owner. Every piece pays a 7.5% ERC-2981 royalty to its artist's payout address.
+seller can never broker its own resale. An artist's ETH share and royalties are sent straight to their payout
+address at the sale (`ArtistPaid`), with `ARTIST_PAY_GAS` (50,000) for it to receive; if it can't, the share waits in
+their balance instead, so a sale never fails because of it. Balances are per currency (ETH = address(0), IMD); brokers,
+and artists for anything that waited, `withdraw(currency)` their own (artists to their payout address); `withdrawHouse`
+pays the current owner. Every piece pays a 7.5% ERC-2981 royalty to its artist's payout address.
 
 ## Named constants (chosen where the brief left them open)
 

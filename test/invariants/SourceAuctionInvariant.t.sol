@@ -18,6 +18,7 @@ contract AuctionHandler is Test {
     uint256 public bidIn;
     uint256 public refundOut;
     uint256 public settledAmount;
+    uint256 public artistPaid; // the artist's share, sent straight to their payout address at settlement
     uint256 public lastHigh;
     bool public everSettled;
     uint256 public bids;
@@ -105,6 +106,9 @@ contract AuctionHandler is Test {
         address winner = source.highBidder();
         uint256 high = source.highBid();
         uint256 houseBefore = address(house).balance;
+        (,,,, address art,,,,,,,) = house.collections(address(source));
+        address artTo = house.artistPayout(art) == address(0) ? art : house.artistPayout(art);
+        uint256 artBefore = artTo.balance;
         vm.prank(actor);
         if (!ok) {
             vm.expectRevert();
@@ -120,7 +124,8 @@ contract AuctionHandler is Test {
             assertEq(source.pieceContract(), piece);
             assertEq(ArtifactsPiece(piece).ownerOf(1), winner, "THE SOURCE goes to the winner");
             assertTrue(ArtifactsPiece(piece).isSource());
-            assertEq(address(house).balance - houseBefore, high, "proceeds through the ledger");
+            artistPaid = artTo.balance - artBefore;
+            assertEq(address(house).balance - houseBefore + artistPaid, high, "proceeds: the ledger, and the artist paid directly");
         }
     }
 
@@ -197,10 +202,10 @@ contract SourceAuctionInvariantTest is Fixture {
             assertFalse(source.auctionOpen());
             assertTrue(source.pieceContract() != address(0));
             assertEq(ArtifactsPiece(source.pieceContract()).ownerOf(1), source.highBidder());
-            assertEq(address(house).balance, h.settledAmount());
             uint256 owed = house.balances(artist, address(0)) + house.balances(broker, address(0))
                 + house.balances(address(house), address(0)) + house.balances(house.BUYBACK(), address(0));
-            assertEq(owed, h.settledAmount(), "proceeds split in the ledger");
+            assertEq(address(house).balance, owed, "the ledger holds what it owes");
+            assertEq(owed + h.artistPaid(), h.settledAmount(), "proceeds: split in the ledger, the artist's paid directly");
         } else {
             assertEq(source.pieceContract(), address(0));
             assertEq(address(house).balance, 0);

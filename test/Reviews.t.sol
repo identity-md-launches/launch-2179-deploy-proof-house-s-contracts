@@ -156,13 +156,18 @@ contract ReviewsTest is Fixture {
         assertEq(_tally(0)[2], 1);
     }
 
-    /// @dev Brokers publish theses: only brokers, up to MAX_THESIS bytes, the latest per author stands, open after
+    /// @dev Anyone publishes a thesis (a broker's earns through their link; anyone else's makes their case to the
+    /// curator, who may make them a broker): up to MAX_THESIS bytes, the latest per author stands, open after
     /// acceptance (to promote the drop), closed once declined.
-    function test_brokersPublishTheses() public {
+    function test_anyonePublishesTheses() public {
         string memory text = "The case for this drop: on-chain, owner-only, and it fits the house.";
-        vm.prank(bob);
-        vm.expectRevert(SubmissionReviews.NotABroker.selector);
+        vm.prank(bob); // no pass, not approved: a wallet making its case
         reviews.postThesis(0, text);
+        assertEq(reviews.thesisAuthors(0), 1);
+        assertFalse(house.isEligibleBroker(bob), "writing doesn't make a broker");
+        vm.prank(curator); // the curator liked it
+        house.setBroker(bob, true);
+        assertTrue(house.isEligibleBroker(bob));
         uint256 max = reviews.MAX_THESIS();
         vm.startPrank(broker); // approved by the curator in the fixture
         vm.expectRevert(SubmissionReviews.BadThesis.selector);
@@ -174,10 +179,10 @@ contract ReviewsTest is Fixture {
         vm.expectEmit(address(reviews));
         emit SubmissionReviews.Thesis(0, broker, text);
         reviews.postThesis(0, text);
-        assertEq(reviews.thesisAuthors(0), 1);
+        assertEq(reviews.thesisAuthors(0), 2);
         vm.warp(vm.getBlockTimestamp() + 1 hours);
         reviews.postThesis(0, string(new bytes(max))); // the longest allowed, as an update
-        assertEq(reviews.thesisAuthors(0), 1, "an update, not a second author");
+        assertEq(reviews.thesisAuthors(0), 2, "an update, not a third author");
         assertEq(reviews.thesisAt(0, broker), vm.getBlockTimestamp());
         vm.stopPrank();
         // accepted: still open, to keep making the case for the drop
@@ -193,12 +198,28 @@ contract ReviewsTest is Fixture {
         vm.prank(broker);
         vm.expectRevert(SubmissionReviews.Declined.selector);
         reviews.postThesis(1, text);
-        // a broker the curator stops approving (and with no pass) can't publish any more
+    }
+
+    /// @dev Any wallet applies to be a broker with a thesis for the house itself; the latest stands; it grants nothing
+    /// until the curator approves the writer.
+    function test_anyoneAppliesToBeABroker() public {
+        string memory text = "Why I should broker for Proof House.\n\nOn X: https://x.com/me/status/1846000000000000001";
+        vm.prank(bob);
+        vm.expectRevert(SubmissionReviews.BadThesis.selector);
+        reviews.applyAsBroker("");
+        uint256 max = reviews.MAX_THESIS();
+        vm.prank(bob);
+        vm.expectRevert(SubmissionReviews.BadThesis.selector);
+        reviews.applyAsBroker(string(new bytes(max + 1)));
+        vm.expectEmit(address(reviews));
+        emit SubmissionReviews.BrokerApplication(bob, text);
+        vm.prank(bob);
+        reviews.applyAsBroker(text);
+        assertEq(reviews.appliedAt(bob), vm.getBlockTimestamp());
+        assertFalse(house.isEligibleBroker(bob), "applying grants nothing");
         vm.prank(curator);
-        house.setBroker(broker, false);
-        vm.prank(broker);
-        vm.expectRevert(SubmissionReviews.NotABroker.selector);
-        reviews.postThesis(0, text);
+        house.setBroker(bob, true);
+        assertTrue(house.isEligibleBroker(bob));
     }
 
     function test_inputChecks() public {

@@ -152,6 +152,13 @@ abstract contract Fixture is Test {
         p.postEscrowKey{value: deposit}(wrapped, r, z);
     }
 
+    /// @dev All the ETH the artist has received: paid straight to the payout address at each sale, plus anything
+    /// waiting in the ledger (a payout address that couldn't take it).
+    function _artistEth() internal view returns (uint256) {
+        address to = house.artistPayout(artist);
+        return house.balances(artist, address(0)) + (to == address(0) ? artist : to).balance;
+    }
+
     /// @dev A valid version 2 viewing key for a label (a secp256k1 point's x): what a buyer registers on a piece.
     function _vk(string memory label) internal returns (bytes32) {
         return bytes32(vm.createWallet(label).publicKeyX);

@@ -23,6 +23,8 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
     /// @notice The balance key of ETH (or tokens) set aside to buy back and burn IMD. Only the buyback burner,
     /// set once, can receive it.
     address public constant BUYBACK = address(uint160(uint256(keccak256("proofhouse.buyback"))));
+    /// @notice The gas an artist's payout address gets to receive its share at a sale (see _payArtist).
+    uint256 public constant ARTIST_PAY_GAS = 50_000;
     uint256 public constant MAX_PIECE_BYTES = 100_000;
     address public constant ETH = address(0);
 
@@ -124,6 +126,8 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
         uint256 burnShare
     );
     event Withdrawn(address indexed party, address indexed currency, address to, uint256 amount);
+    /// @notice An artist's ETH share, sent straight to their payout address at the sale.
+    event ArtistPaid(address indexed artist, address indexed to, uint256 amount);
     event Submitted(uint256 indexed id, address indexed submitter, bytes32 contentHash, string previewURI);
     event SubmissionDecided(uint256 indexed id, SubmissionStatus status);
 
@@ -426,9 +430,9 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
         }
         if (msg.value != royalty + brokerShare) revert WrongPrice();
         if (brokerShare > 0 && !isEligibleBroker(broker)) revert NotEligibleBroker();
-        balances[c.artist][ETH] += royalty;
         if (brokerShare > 0) balances[broker][ETH] += brokerShare;
         emit Resale(module, msg.sender, brokerShare > 0 ? broker : address(0), royalty, brokerShare);
+        _payArtist(c.artist, ETH, royalty);
     }
 
     /// @notice Whether `module` can record a sale of its own collection now: an approved sale module registered as a
@@ -466,10 +470,27 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
             artistShare += houseShare;
             houseShare = 0;
         }
-        balances[c.artist][currency] += artistShare;
         balances[address(this)][currency] += houseShare;
         balances[BUYBACK][currency] += burnShare;
         emit Sale(collection, buyer, broker, currency, amount, brokerShare, houseShare, artistShare, burnShare);
+        _payArtist(c.artist, currency, artistShare); // last: every other share is already recorded
+    }
+
+    /// @dev The artist's ETH share goes straight to their payout address, with enough gas for a wallet or a Safe to
+    /// receive it and little more. If it can't take it, or the share is in another currency, it waits in their
+    /// balance for withdraw, as every other share does, so a sale never fails because of the artist's address.
+    function _payArtist(address artist, address currency, uint256 amount) private {
+        if (amount == 0) return;
+        if (currency == ETH) {
+            address to = artists[artist].payout;
+            if (to == address(0)) to = artist;
+            (bool ok,) = to.call{value: amount, gas: ARTIST_PAY_GAS}("");
+            if (ok) {
+                emit ArtistPaid(artist, to, amount);
+                return;
+            }
+        }
+        balances[artist][currency] += amount;
     }
 
     // ---------- withdrawals ----------

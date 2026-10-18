@@ -9,7 +9,6 @@ interface IHouseSubmissions {
         view
         returns (address submitter, bytes32 contentHash, string memory previewURI, uint8 status);
     function submissionCount() external view returns (uint256);
-    function isEligibleBroker(address broker) external view returns (bool);
 }
 
 interface IFactoryPieceContracts {
@@ -65,12 +64,15 @@ contract SubmissionReviews {
     mapping(uint256 => uint256[4]) private _tally;
     /// @notice When each broker last published a thesis on a submission (0: never), and how many brokers have.
     mapping(uint256 => mapping(address => uint64)) public thesisAt;
+    /// @notice When each wallet last applied to be a broker (applyAsBroker); 0 if it never has.
+    mapping(address => uint64) public appliedAt;
     mapping(uint256 => uint256) public thesisAuthors;
 
     event Reviewed(
         uint256 indexed submissionId, uint256 indexed voice, address indexed reviewer, Verdict verdict, string note
     );
     event Thesis(uint256 indexed submissionId, address indexed author, string text);
+    event BrokerApplication(address indexed author, string text);
 
     error ZeroAddress();
     error BadVerdict();
@@ -79,7 +81,6 @@ contract SubmissionReviews {
     error NotPending();
     error NotHolder();
     error NoSuchPiece();
-    error NotABroker();
     error BadThesis();
     error Declined();
 
@@ -134,16 +135,31 @@ contract SubmissionReviews {
         emit Reviewed(submissionId, voice, msg.sender, verdict, note);
     }
 
-    /// @notice A broker's thesis on a submission (up to MAX_THESIS bytes): the latest one per author is the one that
-    /// stands. Open while the submission is pending and after it is accepted, to keep making the case for the drop;
-    /// closed once it is declined. The text lives in the event; the contract keeps only when and how many.
+    /// @notice A thesis on a submission (up to MAX_THESIS bytes), from any wallet: the latest one per author is the
+    /// one that stands. A broker's earns through their link; anyone else's makes their case to the curator, who may
+    /// make them a broker (ArtHouse.setBroker). Open while the submission is pending and after it is accepted, to keep
+    /// making the case for the drop; closed once it is declined. The text lives in the event; the contract keeps only
+    /// when and how many.
     function postThesis(uint256 submissionId, string calldata text) external {
+        _thesis(submissionId, text);
+    }
+
+    /// @notice A thesis for Proof House itself, to be made a broker: from any wallet, up to MAX_THESIS bytes, the
+    /// latest one standing (by convention ending "On X: <the writer's post>"). The curator reads them and may approve
+    /// the writer (ArtHouse.setBroker); it grants nothing by itself. The text lives in the event.
+    function applyAsBroker(string calldata text) external {
+        uint256 len = bytes(text).length;
+        if (len == 0 || len > MAX_THESIS) revert BadThesis();
+        appliedAt[msg.sender] = uint64(block.timestamp);
+        emit BrokerApplication(msg.sender, text);
+    }
+
+    function _thesis(uint256 submissionId, string calldata text) private {
         uint256 len = bytes(text).length;
         if (len == 0 || len > MAX_THESIS) revert BadThesis();
         if (submissionId >= house.submissionCount()) revert NoSuchSubmission();
         (,,, uint8 status) = house.submissions(submissionId);
         if (status == REJECTED) revert Declined();
-        if (!house.isEligibleBroker(msg.sender)) revert NotABroker();
         if (thesisAt[submissionId][msg.sender] == 0) thesisAuthors[submissionId] += 1;
         thesisAt[submissionId][msg.sender] = uint64(block.timestamp);
         emit Thesis(submissionId, msg.sender, text);

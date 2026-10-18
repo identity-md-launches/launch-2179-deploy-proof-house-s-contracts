@@ -252,7 +252,7 @@ contract ArtHouseTest is Fixture {
         vm.prank(alice);
         house.mint{value: price}(address(col), 0, b);
         assertEq(col.ownerOf(0), alice);
-        uint256 artistBal = house.balances(artist, address(0));
+        uint256 artistBal = _artistEth();
         uint256 brokerBal = house.balances(b == address(0) ? broker : b, address(0));
         uint256 houseBal = house.balances(address(house), address(0));
         uint256 burnBal = house.balances(house.BUYBACK(), address(0));
@@ -267,13 +267,14 @@ contract ArtHouseTest is Fixture {
             assertEq(brokerBal, 0);
             assertEq(burnBal, uint256(price) * 500 / 10_000 + uint256(price) * 1500 / 10_000);
         }
-        assertEq(address(house).balance, price);
-        // withdrawals drain exactly the balances
-        if (artistBal > 0) {
+        // the artist's share went straight to them; the house holds the rest
+        assertEq(address(house).balance, price - (artistBal - house.balances(artist, address(0))));
+        // withdrawals drain exactly the balances (an artist's only if their payout address couldn't take it)
+        if (house.balances(artist, address(0)) > 0) {
             vm.prank(artist);
             house.withdraw(address(0));
-            assertEq(artist.balance, artistBal);
         }
+        assertEq(artist.balance, artistBal, "the artist holds their whole share");
         vm.prank(curator);
         house.withdrawHouse(address(0));
         assertEq(curator.balance, houseBal);
@@ -378,7 +379,7 @@ contract ArtHouseTest is Fixture {
         house.mint{value: 1 ether}(address(col), 0, broker);
         assertEq(house.balances(broker, address(0)), 0.1 ether);
         assertEq(house.balances(address(house), address(0)), 0.2 ether);
-        assertEq(house.balances(artist, address(0)), 0.7 ether);
+        assertEq(_artistEth(), 0.7 ether);
     }
 
     function test_withdrawNothingReverts_andHouseGoesToCurrentOwner() public {
