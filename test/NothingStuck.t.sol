@@ -411,17 +411,16 @@ contract NothingStuckTest is Fixture {
 
     // ---------- the real cryptography: keys and proofs made by site/sealcrypto.js ----------
 
-    /// @dev A piece contract (an EIP-1167 clone of the template) at the address the fixture proofs were made for, with
+    /// @dev A piece runtime copy at the address the fixture proofs were made for, with
     /// the fixture's id and key commitment, held by alice; bob is the fixture's buyer, bought in with its viewing key.
     function _realPiece() internal returns (ArtifactsPiece piece, string memory json, address buyer) {
         json = vm.readFile("test/fixtures/keyproof.json");
         address at = vm.parseJsonAddress(json, ".ctx.piece");
         buyer = vm.parseJsonAddress(json, ".ctx.buyer");
         vm.chainId(vm.parseJsonUint(json, ".ctx.chainId"));
-        vm.etch(
-            at, abi.encodePacked(hex"363d3d373d3d3d363d73", address(pieceImpl), hex"5af43d82803e903d91602b57fd5bf3")
-        );
+        vm.etch(at, address(pieceImpl).code);
         piece = ArtifactsPiece(at);
+        vm.prank(address(factory));
         piece.initialize(
             address(factory),
             address(house),

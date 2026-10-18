@@ -9,7 +9,7 @@ import {Clones} from "./libs/Clones.sol";
 import {IArtHouse, IArtifactsPiece, IVRFCoordinatorV2Plus, Traits} from "./interfaces/Interfaces.sol";
 
 /// @notice Sells the 255 ARTIFACTS editions at one ETH price through the Proof House ledger, assigns editions
-/// with Chainlink VRF v2.5, and deploys each buyer's piece clone at claim.
+/// with Chainlink VRF v2.5, and deploys each buyer's independent piece contract at claim.
 contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
     uint256 public constant EDITIONS = 255;
     /// @notice Most editions one wallet can buy, across all its purchases.
@@ -515,15 +515,19 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
             // already claimed (without its key, after KEY_WAIT) or re-sold without being re-keyed: the key goes into
             // the piece, wrapped to whoever holds it now; the piece takes it only into an empty key slot
             IArtifactsPiece(piece).rewrapFor(wrapped);
-            emit WrappedKeyPosted(edition);
-            return;
+        } else {
+            if (viewingKeyOf[buyer] == bytes32(0)) revert NoViewingKey();
+            _wrappedKey[edition] = wrapped;
         }
-        if (viewingKeyOf[buyer] == bytes32(0)) revert NoViewingKey();
-        _wrappedKey[edition] = wrapped;
-        emit WrappedKeyPosted(edition);
+        // Keep the event ABI unchanged while avoiding a compiler constant-data tail containing 0xf4.
+        // The launch scans every runtime byte outside PUSH data, including otherwise unreachable constants.
+        bytes memory signature = bytes("WrappedKeyPosted(uint256)");
+        assembly ("memory-safe") {
+            log2(0, 0, keccak256(add(signature, 32), mload(signature)), edition)
+        }
     }
 
-    /// @notice Deploys the edition's piece contract (EIP-1167 clone) and mints its single token to the buyer.
+    /// @notice Deploys an independent runtime copy for the edition and mints its single token to the buyer.
     function claim(uint256 edition) external nonReentrant returns (address piece) {
         piece = _claim(edition);
     }
@@ -546,7 +550,7 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
         bytes memory wrapped = _wrappedKey[edition];
         // no key yet: only once KEY_WAIT has passed since the draw (the key can still be sent into the piece)
         if (wrapped.length == 0 && block.timestamp < editionAssignedAt[edition] + KEY_WAIT) revert KeyNotPosted();
-        piece = Clones.clone(pieceImplementation);
+        piece = Clones.copyCode(pieceImplementation);
         pieceContract[edition] = piece;
         isPiece[piece] = true;
         PieceData storage p = _pieces[edition];

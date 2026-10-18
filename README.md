@@ -18,7 +18,7 @@ only when a piece is bought.
 | 0 | `ArtStorage` | `($owner)` | SSTORE2 chunk store for plain SVG collections; written only by ArtHouse |
 | 1 | `ArtHouse` | `($owner, $contract:ArtStorage, IMD)` | The ledger: artists, brokers, sale modules, splits, balances, plain collections, submissions. Its constructor deploys the `ArtCollection` implementation. |
 | 1b | `KeyProof` | `()` | Stateless checker: proves a resale's wrapped key doesn't open its piece (Chaum-Pedersen on secp256k1, checked with ecrecover and modexp); a key that opens can never be proven fake |
-| 2 | `ArtifactsPiece` | `($contract:KeyProof)` | Locked implementation: a one-token ERC-721 + ERC-2981 per piece (clone per edition; full copy for THE SOURCE); its resale escrow takes a 10% seller deposit with the key, returned at release, the buyer's if the key is proven fake |
+| 2 | `ArtifactsPiece` | `($contract:KeyProof)` | Locked implementation: a one-token ERC-721 + ERC-2981 per piece (full runtime copy per edition and for THE SOURCE); its resale escrow takes a 10% seller deposit with the key, returned at release, the buyer's if the key is proven fake |
 | 3 | `ArtifactsFactory` | `($owner, $contract:ArtHouse, $contract:ArtifactsPiece)` | Publishes the 255 editions, sells them, VRF assignment, claims |
 | 4 | `ArtifactsSource` | `($owner, $contract:ArtHouse, $contract:ArtifactsPiece)` | THE SOURCE: encrypted payload, single-lot auction, settlement, one key delivery |
 | 5 | `BrokerPass` | `(identity.md seats, $contract:ArtifactsFactory, $contract:ArtifactsSource)` | 100 free passes that make a wallet a broker: one per seat or piece and one per wallet, ever; claims open at a start time the factory's owner sets once (`setClaimsOpenAt`) |
@@ -28,11 +28,11 @@ only when a piece is bought.
 `$owner` is the curator: `0xd3e32C1eBEa3a675EffCaAcAf89196948Abd1386`. `script/Deploy.s.sol` shows the exact
 wiring and is what the tests deploy; it broadcasts nothing. Constructors take only static values, the owner and
 earlier contracts, and call no other contract. ArtifactsSource was split out of ArtifactsFactory so every
-runtime stays under the EIP-170 limit of 24,576 bytes (largest: ArtifactsPiece, 24,252 bytes, 324 under it;
+runtime stays under the EIP-170 limit of 24,576 bytes (largest: ArtifactsPiece, 24,385 bytes, 191 under it;
 `forge build --sizes`).
 
 Ownership is two-step everywhere (`transferOwnership` → `acceptOwnership`); there is no `renounceOwnership`,
-no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH leaves contracts by `call`, pull-style.
+no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime or generated collection/piece runtime. ETH leaves contracts by `call`, pull-style.
 
 ## After launch (curator, in this order)
 
@@ -50,6 +50,8 @@ no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH lea
    THE SOURCE: `ArtHouse.setSplit(ArtifactsSource, 1500, 0, 8500, 0)` (15% broker, 85% artist, no house, no burn).
 5. `ArtHouse.setBroker(agent, true)` for each approved broker agent (brokers without a pass).
 5a. `ArtHouse.setBrokerPass(BrokerPass)` and `ArtHouse.setBuybackBurner(ImdBuybackBurner)`: each one time, irreversible.
+    An unavailable or malformed pass balance counts as no pass; it cannot block sales. Manually approved brokers
+    still qualify. A wrong pass address still cannot be corrected, so the owner must check it before setting it.
     `BrokerPass.setClaimsOpenAt(time)` at launch: one time; nobody can claim before it.
 6. `ArtifactsFactory.configureVRF(coordinator, keyHash, subscriptionId, nativePayment)`: can be set, and corrected,
    until the edition sale first opens; from then on it is locked forever. Values come
@@ -70,7 +72,7 @@ no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH lea
    both fixed once the sale first opens. Members count as holders too: `setMemberGate(member, selector, minimum)`
    on both (same locks), at launch Cncptl Prspctv's soulbound points, `setMemberGate(EngageV2
    0x684A61e46Ac3dB9806a199bAe7B9d456F525687d, points(address), 1)`; `isMember(wallet)` reads it with a 100,000 gas
-   cap and only 32 bytes of answer, so the membership contract can never make a buy fail. Members buy as token
+   cap and exactly one 32-byte return word; dynamic and multi-word answers count as no membership. Members buy as token
    holders do (`buy`, `buyMany`, `bid`). Then `ArtifactsSource.setAuction(reserveWei, endTime)`.
 10. Once THE SOURCE's auction has closed: `ArtifactsFactory.setPrice(wei)` (above zero, only while closed) and
     `setSaleOpen(true)`.
@@ -106,11 +108,12 @@ no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH lea
   the `Purchased`/`EditionAssigned`/`Rerequested`/`FallbackDrawStarted` events.
 - **Claim**: buyer `registerViewingKey(viewingKey)` (version 2: the x of a secp256k1 point, see PROTOCOL.md); the
   curator wraps each K offline to its buyer's key and posts them with `postWrappedKeys(editions, wrapped)` (or
-  `postWrappedKey(edition, wrapped)`); buyer (or curator) `claim(edition)` (or `claimMany`) deploys the EIP-1167 clone
+  `postWrappedKey(edition, wrapped)`); buyer (or curator) `claim(edition)` (or `claimMany`) deploys a full, independent runtime copy
   of ArtifactsPiece, named `ARTIFACTS #NNN`, symbol `ARTIFACTS`, holding the ciphertext pointer, traits, commitment
   and wrapped key, and mints token 1 to the buyer. There is no other mint path. An edition whose key hasn't come
   `KEY_WAIT` (30 days) after its draw can be claimed without it; the curator can still post the key into the piece
-  later (`postWrappedKeys` sends it on to the piece's `rewrapFor`).
+  later (`postWrappedKeys` sends it on to the piece's `rewrapFor`). Each edition costs about 4.9M gas for code
+  deposit alone, plus creation and initialization; size `claimMany` batches to the chain's transaction gas limit.
 - **Seal**: each piece's `tokenURI` is on-chain base64 JSON whose image is the R8 frame (white sheet, double
   border, `File   View   Run` menu, title, status `PALETTE  ·  kC  ·  DIRECTION` / `SEED nnn`) with no dots;
   tested byte-for-byte against `framed-003.svg` with its dots removed.
@@ -155,7 +158,7 @@ no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH lea
 
 ## Plain SVG collections (ArtHouse)
 
-`createCollection(name, symbol, artist)` clones `ArtCollection`; supply = registered pieces. The curator or the
+`createCollection(name, symbol, artist)` copies the full `ArtCollection` runtime; supply = registered pieces. The curator or the
 collection's artist (while still approved: `revokeArtist` ends curation rights as well as new collections)
 `registerPiece(collection, pieceId, contentHash, title, description)` (next id only),
 `uploadChunk(collection, pieceId, index, data)` (next index only, ≤100 KB per piece), `finalizePiece`
@@ -181,6 +184,7 @@ pays the current owner. Every piece pays a 7.5% ERC-2981 royalty to its artist's
 |----------|-------|-------|
 | `vrfCallbackGas` (curator-set) | 1,000,000 default, 150,000 to 2,500,000; after the sale opens, only up | ArtifactsFactory |
 | `MAX_PER_WALLET` | 5 | ArtifactsFactory |
+| `BROKER_CALL_GAS` | 100,000; malformed or failed pass lookups count as no pass | ArtHouse |
 | mint phases (`setMintPhases`) | launch: Allowlist 2 per wallet and per seat for 12 h, Allowlist overflow 3 in all for 12 h, then Public 5; set before the sale opens | ArtifactsFactory |
 | `VRF_CONFIRMATIONS` | 3 | ArtifactsFactory |
 | `VRF_RETRY_BLOCKS` | 7,500 (~25 h at 12 s blocks) | ArtifactsFactory |
@@ -216,6 +220,14 @@ pays the current owner. Every piece pays a 7.5% ERC-2981 royalty to its artist's
 - `setSplit` is read at sale time: the curator can change a module collection's split while bids or purchases
   are pending (e.g. before THE SOURCE settles). This is an owner power by design, not a bypass; bidders trust the
   curator not to redirect the artist's or broker's share after the fact.
+- The curator can close and reopen primary sales, or permanently end edition sales, while existing NFTs remain
+  transferable and paid buyers retain their claim paths. Revoking an artist removes curation rights, not their
+  payout. Revoking a sale module makes existing pieces credit resale royalties and broker shares to their own
+  pull-payment balances instead of the ledger. The curator can retry VRF and claim on a buyer's behalf, and can
+  post a key into a claimed piece only while its key slot is empty. These powers are intentional.
+- Only contracts recorded by `ArtifactsFactory.pieceContract` / `isPiece`, `ArtifactsSource.pieceContract`, or
+  ArtHouse's collection registry are authentic. Public code and NFT names can always be copied. Initialization
+  requires the declared controller contract to be the caller, and genuine creation and initialization are atomic.
 - Chainlink VRF is the randomness; the block-hash fallback (above) is only for a draw it hasn't answered in ~3 days.
   The subscription must stay funded or purchases revert at request time.
   Chainlink only answers while the subscription holds a request's maximum cost: `vrfCallbackGas` plus overhead at
@@ -242,6 +254,8 @@ Tests cover: split invariants per currency (fuzzed), VRF assignment of all 255 e
 re-keying, auction, access control, reentrancy, seals per RULES.md R8, and THE SOURCE's encryption: unreadable
 when stored, revealed only with the committed key, decrypting byte for byte at any length (fuzzed), one curator key
 delivery, no reveal under escrow; after the reveal, the exact renderer page with the seed.
-215 tests, three rounds of adversarial review (the PoCs and fixes are in the tests: `test/NothingStuck.t.sol`,
+The existing suite includes three rounds of adversarial review (the PoCs and fixes are in the tests: `test/NothingStuck.t.sol`,
 `test/AuditRound3.t.sol`, `test/audit/`), and fork tests against mainnet (`test/fork/`: the burner on the real ETH/IMD
 pool, the real Chainlink VRF coordinator; run with `FORK_URL=<mainnet rpc>`).
+
+Launch adaptation findings, exact changes and local verification are recorded in [ADAPTATION.md](ADAPTATION.md).

@@ -52,7 +52,7 @@ abstract contract HolderGate {
     }
 
     /// @notice A member: the membership contract's view returns at least the minimum for this wallet. Read with a gas
-    /// cap and only 32 bytes of its answer, so the membership contract can never make a buy fail.
+    /// cap and exactly one return word, so dynamic ABI offsets cannot count as points. Only 32 bytes are copied.
     function isMember(address account) public view returns (bool) {
         address m = gateMember;
         if (m == address(0)) return false;
@@ -63,7 +63,7 @@ abstract contract HolderGate {
         assembly ("memory-safe") {
             mstore(0, 0)
             ok := staticcall(g, m, add(data, 32), mload(data), 0, 32)
-            if lt(returndatasize(), 32) { ok := 0 } // after the call: its own answer, a whole word or nothing
+            if iszero(eq(returndatasize(), 32)) { ok := 0 } // reject dynamic, short and multi-word answers
             if ok { n := mload(0) }
         }
         return ok && n >= gateMemberMin;
