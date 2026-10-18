@@ -63,7 +63,9 @@ contract BurnerTest is Fixture {
         vm.startPrank(curator);
         vm.expectRevert(ImdBuybackBurner.NoMinimum.selector);
         burner.burnEth(1 ether, 0, block.timestamp); // a swap always names a minimum
-        vm.expectRevert(abi.encodeWithSelector(ImdBuybackBurner.TooLittleOut.selector, 1 ether * RATE, 1 ether * RATE + 1));
+        vm.expectRevert(
+            abi.encodeWithSelector(ImdBuybackBurner.TooLittleOut.selector, 1 ether * RATE, 1 ether * RATE + 1)
+        );
         burner.burnEth(1 ether, 1 ether * RATE + 1, block.timestamp);
         vm.expectRevert(ImdBuybackBurner.Expired.selector);
         burner.burnEth(1 ether, 1, block.timestamp - 1);

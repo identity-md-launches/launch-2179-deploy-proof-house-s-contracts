@@ -72,7 +72,10 @@ abstract contract Fixture is Test {
     /// @dev A wrapped key as a seller's tool makes one for `p`'s current sale, with the proof postEscrowKey takes
     /// (KeyProof.knowsWrap): E = e·G for a scalar from `seed`, and `seed`'s hash as the masked key (whether it opens
     /// is only the buyer's to find out). Reads the escrow, so call it before any vm.prank or vm.expectRevert.
-    function _sellerKey(ArtifactsPiece p, string memory seed) internal returns (bytes memory wrapped, address r, uint256 z) {
+    function _sellerKey(ArtifactsPiece p, string memory seed)
+        internal
+        returns (bytes memory wrapped, address r, uint256 z)
+    {
         uint256 e = _eOf(seed);
         wrapped = _wrappedOf(seed);
         (,, address buyer,,,,,, bytes32 vk,) = p.escrow();
@@ -88,14 +91,19 @@ abstract contract Fixture is Test {
         uint256 k = uint256(keccak256(abi.encodePacked("k", wrapped, e))) % (SECP_N - 1) + 1;
         r = vm.addr(k);
         uint256 c = uint256(
-            keccak256(abi.encodePacked("Proof House key wrap v2 proof", block.chainid, p, buyer, vk, keccak256(wrapped), r))
+            keccak256(
+                abi.encodePacked("Proof House key wrap v2 proof", block.chainid, p, buyer, vk, keccak256(wrapped), r)
+            )
         ) % SECP_N;
         z = addmod(k, mulmod(c, e, SECP_N), SECP_N);
     }
 
     /// @dev The wrapped key _sellerKey makes for a seed (what the piece holds once the sale releases).
     function _wrappedOf(string memory seed) internal returns (bytes memory) {
-        return abi.encodePacked(uint8(2), vm.createWallet(_eOf(seed)).publicKeyX, keccak256(abi.encodePacked("masked", seed)));
+        return
+            abi.encodePacked(
+                uint8(2), vm.createWallet(_eOf(seed)).publicKeyX, keccak256(abi.encodePacked("masked", seed))
+            );
     }
 
     /// @dev The wrapping scalar for a seed, with E = e·G's y even (as KeyProof reads E back from its x).
@@ -125,14 +133,31 @@ abstract contract Fixture is Test {
         uint256 c = uint256(
             keccak256(
                 abi.encodePacked(
-                    "Proof House fake key v2", block.chainid, p, buyer, vm.createWallet(vkLabel).publicKeyX,
-                    vm.createWallet(e).publicKeyX, S.publicKeyX, S.publicKeyY, A1.publicKeyX, A1.publicKeyY, A2.publicKeyX, A2.publicKeyY
+                    "Proof House fake key v2",
+                    block.chainid,
+                    p,
+                    buyer,
+                    vm.createWallet(vkLabel).publicKeyX,
+                    vm.createWallet(e).publicKeyX,
+                    S.publicKeyX,
+                    S.publicKeyY,
+                    A1.publicKeyX,
+                    A1.publicKeyY,
+                    A2.publicKeyX,
+                    A2.publicKeyY
                 )
             )
         ) % SECP_N;
         Vm.Wallet memory X = vm.createWallet(mulmod(c, mulmod(b, e, SECP_N), SECP_N));
         pr = KeyProof.Proof(
-            S.publicKeyX, S.publicKeyY, A1.publicKeyX, A1.publicKeyY, A2.publicKeyX, A2.publicKeyY, X.publicKeyX, X.publicKeyY,
+            S.publicKeyX,
+            S.publicKeyY,
+            A1.publicKeyX,
+            A1.publicKeyY,
+            A2.publicKeyX,
+            A2.publicKeyY,
+            X.publicKeyX,
+            X.publicKeyY,
             addmod(w, mulmod(c, b, SECP_N), SECP_N)
         );
     }

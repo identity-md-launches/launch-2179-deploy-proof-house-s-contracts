@@ -337,8 +337,8 @@ contract ArtifactsFactoryTest is Fixture {
         factory.buy{value: 1 ether}(address(0));
         // ledger holds exactly the proceeds, split per sale
         assertEq(address(house).balance + artist.balance, 255 ether, "the ledger, and the artist paid directly");
-        uint256 total = _artistEth() + house.balances(broker, address(0))
-            + house.balances(address(house), address(0)) + house.balances(house.BUYBACK(), address(0));
+        uint256 total = _artistEth() + house.balances(broker, address(0)) + house.balances(address(house), address(0))
+            + house.balances(house.BUYBACK(), address(0));
         assertEq(total, 255 ether);
         assertEq(_artistEth(), 255 ether * 7500 / 10_000);
         assertEq(house.balances(broker, address(0)), 85 * 0.15 ether);

@@ -71,7 +71,12 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
     event EscrowRefunded(address indexed buyer, uint256 amount);
     event EscrowProvenFake(address indexed buyer, uint256 amount);
     event EscrowReleased(
-        address indexed seller, address indexed buyer, uint256 price, uint256 royalty, address broker, uint256 brokerShare
+        address indexed seller,
+        address indexed buyer,
+        uint256 price,
+        uint256 royalty,
+        address broker,
+        uint256 brokerShare
     );
     event Revealed(bytes32 key);
     event Withdrawn(address indexed to, uint256 amount);

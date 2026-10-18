@@ -41,7 +41,9 @@ abstract contract HolderGate {
     /// @dev Members as a third way in: a contract, its view taking the wallet and returning a number, and the minimum
     /// (a membership with no minimum, or a minimum with no contract, is refused). All zero: no members.
     function _setMemberGate(address member, bytes4 call_, uint256 minimum) internal {
-        if ((member == address(0)) != (minimum == 0) || (member == address(0)) != (call_ == bytes4(0))) revert BadGate();
+        if ((member == address(0)) != (minimum == 0) || (member == address(0)) != (call_ == bytes4(0))) {
+            revert BadGate();
+        }
         if (member != address(0) && member.code.length == 0) revert BadGate(); // a typo would shut every member out
         gateMember = member;
         gateMemberCall = call_;

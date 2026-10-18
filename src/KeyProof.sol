@@ -70,7 +70,8 @@ contract KeyProof {
         if (_lin(0, c, p.sx, p.sy) != _addr(p.xx, p.xy)) revert BadProof();
         (uint256 yx, uint256 yy) = _add(p.a2x, p.a2y, p.xx, p.xy);
         if (_lin(0, p.z, ex, ey) != _addr(yx, yy)) revert BadProof();
-        bytes32 key = bytes32(wrapped[33:65]) ^ keccak256(abi.encodePacked("Proof House key wrap v2", pieceId, bx, ex, p.sx));
+        bytes32 key =
+            bytes32(wrapped[33:65]) ^ keccak256(abi.encodePacked("Proof House key wrap v2", pieceId, bx, ex, p.sx));
         return keccak256(abi.encodePacked(key)) != commitment;
     }
 
@@ -89,7 +90,9 @@ contract KeyProof {
         if (!ok) return false;
         uint256 c = uint256(
             keccak256(
-                abi.encodePacked("Proof House key wrap v2 proof", block.chainid, msg.sender, buyer, viewingKey, keccak256(wrapped), r)
+                abi.encodePacked(
+                    "Proof House key wrap v2 proof", block.chainid, msg.sender, buyer, viewingKey, keccak256(wrapped), r
+                )
             )
         ) % N;
         // z·G − c·E = R
@@ -99,10 +102,10 @@ contract KeyProof {
     function _challenge(uint256 bx, uint256 ex, address buyer, Proof calldata p) private view returns (uint256) {
         return uint256(
             keccak256(
-                abi.encodePacked(
-                    "Proof House fake key v2", block.chainid, msg.sender, buyer, bx, ex, p.sx, p.sy, p.a1x, p.a1y, p.a2x, p.a2y
-                )
-            )
+            abi.encodePacked(
+            "Proof House fake key v2", block.chainid, msg.sender, buyer, bx, ex, p.sx, p.sy, p.a1x, p.a1y, p.a2x, p.a2y
+        )
+        )
         ) % N;
     }
 

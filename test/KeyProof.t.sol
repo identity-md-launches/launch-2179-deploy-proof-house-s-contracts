@@ -31,8 +31,15 @@ contract KeyProofTest is Test {
         wrapped = vm.parseJsonBytes(json, string.concat(".", name, ".wrapped"));
         string[] memory a = vm.parseJsonStringArray(json, string.concat(".", name, ".proof"));
         p = KeyProof.Proof(
-            vm.parseUint(a[0]), vm.parseUint(a[1]), vm.parseUint(a[2]), vm.parseUint(a[3]), vm.parseUint(a[4]),
-            vm.parseUint(a[5]), vm.parseUint(a[6]), vm.parseUint(a[7]), vm.parseUint(a[8])
+            vm.parseUint(a[0]),
+            vm.parseUint(a[1]),
+            vm.parseUint(a[2]),
+            vm.parseUint(a[3]),
+            vm.parseUint(a[4]),
+            vm.parseUint(a[5]),
+            vm.parseUint(a[6]),
+            vm.parseUint(a[7]),
+            vm.parseUint(a[8])
         );
     }
 

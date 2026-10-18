@@ -125,7 +125,11 @@ contract AuctionHandler is Test {
             assertEq(ArtifactsPiece(piece).ownerOf(1), winner, "THE SOURCE goes to the winner");
             assertTrue(ArtifactsPiece(piece).isSource());
             artistPaid = artTo.balance - artBefore;
-            assertEq(address(house).balance - houseBefore + artistPaid, high, "proceeds: the ledger, and the artist paid directly");
+            assertEq(
+                address(house).balance - houseBefore + artistPaid,
+                high,
+                "proceeds: the ledger, and the artist paid directly"
+            );
         }
     }
 
@@ -205,7 +209,9 @@ contract SourceAuctionInvariantTest is Fixture {
             uint256 owed = house.balances(artist, address(0)) + house.balances(broker, address(0))
                 + house.balances(address(house), address(0)) + house.balances(house.BUYBACK(), address(0));
             assertEq(address(house).balance, owed, "the ledger holds what it owes");
-            assertEq(owed + h.artistPaid(), h.settledAmount(), "proceeds: split in the ledger, the artist's paid directly");
+            assertEq(
+                owed + h.artistPaid(), h.settledAmount(), "proceeds: split in the ledger, the artist's paid directly"
+            );
         } else {
             assertEq(source.pieceContract(), address(0));
             assertEq(address(house).balance, 0);

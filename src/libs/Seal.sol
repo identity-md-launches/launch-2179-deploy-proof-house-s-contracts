@@ -96,6 +96,7 @@ library Seal {
     /// @dev THE SOURCE once revealed: the same frame, marked REVEALED. The art itself is the animation, drawn live by
     /// the renderer stored on-chain; a still image can't run it.
     function sourceRevealed() internal pure returns (string memory) {
-        return render(unicode"ARTIFACTS  ◆  MASTER", "THE SOURCE", unicode"FIDELITY · MAX · 1/1", true, REVEALED_MARK);
+        return
+            render(unicode"ARTIFACTS  ◆  MASTER", "THE SOURCE", unicode"FIDELITY · MAX · 1/1", true, REVEALED_MARK);
     }
 }

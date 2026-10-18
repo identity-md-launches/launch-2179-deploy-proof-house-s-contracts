@@ -10,16 +10,21 @@ import {ArtifactsPiece} from "../../src/ArtifactsPiece.sol";
 /// Fixed: postEscrowKey takes only a key whose sender proves they know its e, which a copier never does.
 contract KeyReuseLeakTest is Fixture {
     bytes32 constant VK = 0x37dfaa0f7bd19b31a2cd10b181bcee63d3ab26deaf4ee3274479b52bfcf969e6;
-    bytes constant FAKE = hex"02f7f211ee180ec8c13cf968a27add1bd445b15436a67f19bb1b468f7d81042378df1bbb470634766af87d37b786acbd899ddc3f8c6a974787980513bf35788d87";
+    bytes constant FAKE =
+        hex"02f7f211ee180ec8c13cf968a27add1bd445b15436a67f19bb1b468f7d81042378df1bbb470634766af87d37b786acbd899ddc3f8c6a974787980513bf35788d87";
     bytes32 constant PIECE_COMMITMENT = 0x615bc22f26d68657f3d5e9ae0ae676f65bb6b463d5b45619baaac8e799d18413;
 
     function test_copiedE_cantBePosted(uint256 k, uint256 z) public {
         address at = 0x1111111111111111111111111111111111111111;
         address buyer = 0x2222222222222222222222222222222222222222;
         vm.chainId(31337);
-        vm.etch(at, abi.encodePacked(hex"363d3d373d3d3d363d73", address(pieceImpl), hex"5af43d82803e903d91602b57fd5bf3"));
+        vm.etch(
+            at, abi.encodePacked(hex"363d3d373d3d3d363d73", address(pieceImpl), hex"5af43d82803e903d91602b57fd5bf3")
+        );
         ArtifactsPiece piece = ArtifactsPiece(at);
-        piece.initialize(address(factory), address(house), 9, alice, _traits(9), address(0), PIECE_COMMITMENT, "k", false, bytes32(0));
+        piece.initialize(
+            address(factory), address(house), 9, alice, _traits(9), address(0), PIECE_COMMITMENT, "k", false, bytes32(0)
+        );
         vm.prank(alice);
         piece.list(0.01 ether); // a cheap bait listing
         vm.deal(buyer, 1 ether);

@@ -82,8 +82,17 @@ contract ImdBuybackBurner is IUnlockCallback {
     error TooSoon();
     error TransferFailed();
 
-    constructor(address house_, address poolManager_, address imd_, uint24 poolFee_, int24 poolTickSpacing_, address poolHooks_) {
-        if (house_ == address(0) || poolManager_ == address(0) || imd_ == address(0)) revert ZeroAddress();
+    constructor(
+        address house_,
+        address poolManager_,
+        address imd_,
+        uint24 poolFee_,
+        int24 poolTickSpacing_,
+        address poolHooks_
+    ) {
+        if (house_ == address(0) || poolManager_ == address(0) || imd_ == address(0)) {
+            revert ZeroAddress();
+        }
         house = IOwnedHouse(house_);
         poolManager = IPoolManager(poolManager_);
         imd = imd_;
@@ -110,7 +119,9 @@ contract ImdBuybackBurner is IUnlockCallback {
         }
         if (block.timestamp > deadline) revert Expired();
         if (minImdOut == 0) revert NoMinimum();
-        if (amountIn == 0 || amountIn > address(this).balance || amountIn > uint256(type(int256).max)) revert BadAmount();
+        if (amountIn == 0 || amountIn > address(this).balance || amountIn > uint256(type(int256).max)) {
+            revert BadAmount();
+        }
         PoolKey memory key = PoolKey(address(0), imd, poolFee, poolTickSpacing, poolHooks);
         bytes memory ret = poolManager.unlock(abi.encode(key, amountIn));
         uint256 ethIn;
@@ -136,7 +147,9 @@ contract ImdBuybackBurner is IUnlockCallback {
         if (msg.sender != address(poolManager)) revert NotPoolManager();
         (PoolKey memory key, uint256 amountIn) = abi.decode(data, (PoolKey, uint256));
         int256 delta = poolManager.swap(
-            key, SwapParams({zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: MIN_SQRT_PRICE_LIMIT}), ""
+            key,
+            SwapParams({zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: MIN_SQRT_PRICE_LIMIT}),
+            ""
         );
         int128 amount0 = int128(delta >> 128); // ETH: what this contract owes, negative
         int128 amount1 = int128(delta); // IMD: what the pool owes this contract, positive

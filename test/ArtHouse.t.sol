@@ -289,7 +289,9 @@ contract ArtHouseTest is Fixture {
 
     /// A sale paid in IMD leaves its buyback share in IMD: released to the burner, it goes to the dead address as it is.
     function test_imdBuybackIsReleasedAndBurned() public {
-        ImdBuybackBurner burner = new ImdBuybackBurner(address(house), address(new MockPoolManager(1)), address(imd), 10_000, 200, address(0));
+        ImdBuybackBurner burner = new ImdBuybackBurner(
+            address(house), address(new MockPoolManager(1)), address(imd), 10_000, 200, address(0)
+        );
         vm.prank(curator);
         house.setBuybackBurner(address(burner));
         uint256 price = 100 ether;

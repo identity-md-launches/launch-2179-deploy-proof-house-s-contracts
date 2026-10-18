@@ -33,7 +33,9 @@ contract ClaimEndTest is Fixture {
     function test_claimMany_claimsEveryOneInOneCall() public {
         _keyFor(alice);
         uint256[] memory eds = new uint256[](3);
-        for (uint256 i; i < 3; ++i) eds[i] = _ready(alice, 7 + i);
+        for (uint256 i; i < 3; ++i) {
+            eds[i] = _ready(alice, 7 + i);
+        }
         vm.prank(alice);
         address[] memory pieces = factory.claimMany(eds);
         assertEq(pieces.length, 3);

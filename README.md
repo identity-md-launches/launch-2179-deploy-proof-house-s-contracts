@@ -38,7 +38,11 @@ no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH lea
 
 1. `ArtStorage.setHouse(ArtHouse)`: one time, irreversible.
 2. `ArtHouse.approveArtist(artist, name)` for the ARTIFACTS artist. The artist may `setPayout(address)` later;
-   payout is kept across revoke/re-approval.
+   payout is kept across revoke/re-approval. The artist's ETH share is paid to the payout address at each sale (a
+   primary sale and a resale royalty alike), with a 50,000 gas stipend and no return data copied; if that address
+   can't take it, the share waits in the artist's balance (`ArtistCredited`) for `withdraw`, so a sale never fails
+   because of the artist. `recordSale` and `recordResale` hold the ledger's reentrancy lock, and a piece's `release`
+   moves the token and its key before it calls the ledger.
 3. `ArtHouse.setSaleModule(ArtifactsFactory, true)` and `ArtHouse.setSaleModule(ArtifactsSource, true)`.
 4. `ArtHouse.registerModuleCollection(ArtifactsFactory, artist)` and `…(ArtifactsSource, artist)` so their sales
    split and pay royalties to that artist (default split 75% artist / 15% broker / 5% house / 5% IMD buyback and burn;
@@ -63,7 +67,11 @@ no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH lea
    `reference/the-source.renderer.html` and a test seed and key.
 9. Holders first: `setGate(seats, IMD, minBalance, seconds)` on both. ArtifactsSource: 30 days (holders only for the
    whole auction), changeable until the first bid. ArtifactsFactory: 24 hours, plus `setMintPhases(12 h, 2, 12 h, 3)`,
-   both fixed once the sale first opens. Then `ArtifactsSource.setAuction(reserveWei, endTime)`.
+   both fixed once the sale first opens. Members count as holders too: `setMemberGate(member, selector, minimum)`
+   on both (same locks), at launch Cncptl Prspctv's soulbound points, `setMemberGate(EngageV2
+   0x684A61e46Ac3dB9806a199bAe7B9d456F525687d, points(address), 1)`; `isMember(wallet)` reads it with a 100,000 gas
+   cap and only 32 bytes of answer, so the membership contract can never make a buy fail. Members buy as token
+   holders do (`buy`, `buyMany`, `bid`). Then `ArtifactsSource.setAuction(reserveWei, endTime)`.
 10. Once THE SOURCE's auction has closed: `ArtifactsFactory.setPrice(wei)` (above zero, only while closed) and
     `setSaleOpen(true)`.
 
@@ -89,7 +97,11 @@ no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH lea
   never push it back) anyone may `startFallbackDraw(id)`, which picks a block 5 ahead (`fallbackBlock(id)`), then
   `finishFallbackDraw(id)` once that block exists. The edition is drawn from its hash: BLOCKHASH for 256 blocks, then
   the EIP-2935 history contract (`BLOCK_HISTORY`, 8,191 blocks, ~27 h). A started draw's result stands: it can't be
-  re-requested away, and it can start again only once its block hash can no longer be read at all. Whoever builds
+  re-requested away, and it can start again only once its block hash can no longer be read at all. A fallback draw
+  also waits until Chainlink has answered nothing for `FALLBACK_BLOCKS` (`lastAnsweredBlock`), and only one runs at a
+  time (`fallbackInFlight`; nobody can re-request meanwhile), so no answer can land between a target hash becoming
+  known and its draw finishing, and nobody can choose the order draws finish in. The house runs a keeper that
+  finishes each the moment its block exists. Whoever builds
   that block could steer its hash; this only applies after 3 days without Chainlink. Watch `sold` vs `assigned` and
   the `Purchased`/`EditionAssigned`/`Rerequested`/`FallbackDrawStarted` events.
 - **Claim**: buyer `registerViewingKey(viewingKey)` (version 2: the x of a secp256k1 point, see PROTOCOL.md); the
@@ -230,3 +242,6 @@ Tests cover: split invariants per currency (fuzzed), VRF assignment of all 255 e
 re-keying, auction, access control, reentrancy, seals per RULES.md R8, and THE SOURCE's encryption: unreadable
 when stored, revealed only with the committed key, decrypting byte for byte at any length (fuzzed), one curator key
 delivery, no reveal under escrow; after the reveal, the exact renderer page with the seed.
+215 tests, three rounds of adversarial review (the PoCs and fixes are in the tests: `test/NothingStuck.t.sol`,
+`test/AuditRound3.t.sol`, `test/audit/`), and fork tests against mainnet (`test/fork/`: the burner on the real ETH/IMD
+pool, the real Chainlink VRF coordinator; run with `FORK_URL=<mainnet rpc>`).

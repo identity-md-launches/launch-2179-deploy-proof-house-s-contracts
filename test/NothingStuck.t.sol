@@ -86,7 +86,11 @@ contract NothingStuckTest is Fixture {
         vm.expectRevert(ArtifactsFactory.FallbackPending.selector);
         factory.startFallbackDraw(id);
         factory.finishFallbackDraw(id);
-        assertEq(factory.requestEdition(id), uint256(keccak256(abi.encode(h, id))) % 255 + 1, "the same result, whenever finished");
+        assertEq(
+            factory.requestEdition(id),
+            uint256(keccak256(abi.encode(h, id))) % 255 + 1,
+            "the same result, whenever finished"
+        );
     }
 
     function test_fallbackDraw_startsAgainOnlyOnceItsHashIsGone() public {
@@ -414,11 +418,21 @@ contract NothingStuckTest is Fixture {
         address at = vm.parseJsonAddress(json, ".ctx.piece");
         buyer = vm.parseJsonAddress(json, ".ctx.buyer");
         vm.chainId(vm.parseJsonUint(json, ".ctx.chainId"));
-        vm.etch(at, abi.encodePacked(hex"363d3d373d3d3d363d73", address(pieceImpl), hex"5af43d82803e903d91602b57fd5bf3"));
+        vm.etch(
+            at, abi.encodePacked(hex"363d3d373d3d3d363d73", address(pieceImpl), hex"5af43d82803e903d91602b57fd5bf3")
+        );
         piece = ArtifactsPiece(at);
         piece.initialize(
-            address(factory), address(house), vm.parseJsonUint(json, ".pieceId"), alice, _traits(1), address(0),
-            vm.parseJsonBytes32(json, ".commitment"), "alice's own key", false, bytes32(0)
+            address(factory),
+            address(house),
+            vm.parseJsonUint(json, ".pieceId"),
+            alice,
+            _traits(1),
+            address(0),
+            vm.parseJsonBytes32(json, ".commitment"),
+            "alice's own key",
+            false,
+            bytes32(0)
         );
         vm.prank(alice);
         piece.list(1 ether);
@@ -438,8 +452,15 @@ contract NothingStuckTest is Fixture {
     function _proofOf(string memory json, string memory name) internal pure returns (KeyProof.Proof memory) {
         string[] memory a = vm.parseJsonStringArray(json, string.concat(".", name, ".proof"));
         return KeyProof.Proof(
-            vm.parseUint(a[0]), vm.parseUint(a[1]), vm.parseUint(a[2]), vm.parseUint(a[3]), vm.parseUint(a[4]),
-            vm.parseUint(a[5]), vm.parseUint(a[6]), vm.parseUint(a[7]), vm.parseUint(a[8])
+            vm.parseUint(a[0]),
+            vm.parseUint(a[1]),
+            vm.parseUint(a[2]),
+            vm.parseUint(a[3]),
+            vm.parseUint(a[4]),
+            vm.parseUint(a[5]),
+            vm.parseUint(a[6]),
+            vm.parseUint(a[7]),
+            vm.parseUint(a[8])
         );
     }
 
@@ -456,7 +477,11 @@ contract NothingStuckTest is Fixture {
         vm.prank(buyer);
         piece.release();
         assertEq(piece.ownerOf(1), buyer);
-        assertEq(piece.pendingWithdrawals(alice), 1 ether - 0.075 ether + 0.1 ether, "the honest seller is paid, deposit back");
+        assertEq(
+            piece.pendingWithdrawals(alice),
+            1 ether - 0.075 ether + 0.1 ether,
+            "the honest seller is paid, deposit back"
+        );
     }
 
     function test_realKeys_aJunkKeyIsProvenFake() public {

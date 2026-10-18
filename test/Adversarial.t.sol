@@ -1138,7 +1138,9 @@ contract PieceEdgeTest is Fixture {
     function test_revealNeedsTheSourceLocked_andEmptyRendererURI() public {
         StubController ctl = new StubController();
         ArtifactsPiece src = ArtifactsPiece(Clones.clone(address(pieceImpl)));
-        src.initialize(address(ctl), address(house), 256, alice, _traits(256), address(0), SOURCE_COMMITMENT, "", true, bytes32(0));
+        src.initialize(
+            address(ctl), address(house), 256, alice, _traits(256), address(0), SOURCE_COMMITMENT, "", true, bytes32(0)
+        );
         assertEq(src.name(), unicode"ARTIFACTS · THE SOURCE");
         vm.prank(alice);
         vm.expectRevert(ArtifactsPiece.NotRevealable.selector);

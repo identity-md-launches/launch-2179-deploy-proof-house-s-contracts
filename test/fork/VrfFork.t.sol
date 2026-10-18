@@ -87,7 +87,8 @@ contract VrfForkTest is Test {
         assertEq(ids.length, 5);
 
         // the coordinator itself logged each request, with our gas lane, subscription and callback limit
-        bytes32 requested = keccak256("RandomWordsRequested(bytes32,uint256,uint256,uint256,uint16,uint32,uint32,bytes,address)");
+        bytes32 requested =
+            keccak256("RandomWordsRequested(bytes32,uint256,uint256,uint256,uint16,uint32,uint32,bytes,address)");
         Vm.Log[] memory logs = vm.getRecordedLogs();
         uint256 seen;
         for (uint256 i; i < logs.length; ++i) {

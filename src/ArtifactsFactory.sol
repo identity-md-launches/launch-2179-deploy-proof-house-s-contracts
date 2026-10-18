@@ -277,7 +277,10 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
     /// @notice Mint phases: e.g. (1 h, 1, 1 h, 2) is 1 per wallet for the first hour, 2 in all for the next hour, then
     /// MAX_PER_WALLET. Caps rise (1 to MAX_PER_WALLET, phase 1 at most phase 2); a phase of 0 seconds is skipped.
     /// Set before the sale first opens; (0, 0, 0, 0) clears them.
-    function setMintPhases(uint64 phase1Seconds_, uint8 phase1Cap_, uint64 phase2Seconds_, uint8 phase2Cap_) external onlyOwner {
+    function setMintPhases(uint64 phase1Seconds_, uint8 phase1Cap_, uint64 phase2Seconds_, uint8 phase2Cap_)
+        external
+        onlyOwner
+    {
         if (saleOpenedAt != 0) revert SaleIsOpen();
         if (phase1Seconds_ != 0 && (phase1Cap_ == 0 || phase1Cap_ > MAX_PER_WALLET)) revert BadPhases();
         if (phase2Seconds_ != 0 && (phase2Cap_ == 0 || phase2Cap_ > MAX_PER_WALLET)) revert BadPhases();
@@ -373,7 +376,9 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
         if (requestEdition[requestId] != 0) revert AlreadyFulfilled();
         if (fallbackBlock[requestId] != 0) revert FallbackPending();
         if (_fallbackLive(fallbackInFlight)) revert FallbackBusy(); // no new answer while a fallback draw is under way
-        if (block.number < requestBlock[requestId] + VRF_RETRY_BLOCKS && _stillHeld(requestId)) revert RequestTooRecent();
+        if (block.number < requestBlock[requestId] + VRF_RETRY_BLOCKS && _stillHeld(requestId)) {
+            revert RequestTooRecent();
+        }
         uint256 bought = purchaseBlock[requestId];
         delete requestBuyer[requestId];
         delete requestBlock[requestId];

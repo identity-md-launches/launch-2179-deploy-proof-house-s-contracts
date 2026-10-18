@@ -116,7 +116,13 @@ contract EscrowHandler is Test {
         bytes memory wrapped = abi.encodePacked(uint8(2), vm.createWallet(e).publicKeyX, keccak256(abi.encode(eSeed)));
         uint256 k = uint256(keccak256(abi.encode("k", eSeed))) % (N - 1) + 1;
         address r = vm.addr(k);
-        uint256 c = uint256(keccak256(abi.encodePacked("Proof House key wrap v2 proof", block.chainid, address(piece), buyer, vk, keccak256(wrapped), r))) % N;
+        uint256 c = uint256(
+            keccak256(
+                abi.encodePacked(
+                    "Proof House key wrap v2 proof", block.chainid, address(piece), buyer, vk, keccak256(wrapped), r
+                )
+            )
+        ) % N;
         uint256 z = addmod(k, mulmod(c, e, N), N);
         if (!proven) z = addmod(z, 1, N);
         uint256 deposit = piece.depositFor(price);
@@ -167,9 +173,14 @@ contract EscrowHandler is Test {
             uint256 royalty = (price * 750) / 10_000;
             assertEq(piece.ownerOf(1), buyer, "token to the buyer");
             // the royalty goes straight to the artist (or waits in the ledger); the seller's proceeds stay on the piece
-            assertEq(piece.pendingWithdrawals(seller), sellerBefore + price - royalty + deposit, "seller proceeds and deposit");
             assertEq(
-                ArtHouse(address(piece.house())).balances(royaltyTo, address(0)) - ledgerBefore + (royaltyTo.balance - ethBefore),
+                piece.pendingWithdrawals(seller),
+                sellerBefore + price - royalty + deposit,
+                "seller proceeds and deposit"
+            );
+            assertEq(
+                ArtHouse(address(piece.house())).balances(royaltyTo, address(0)) - ledgerBefore
+                    + (royaltyTo.balance - ethBefore),
                 royalty,
                 "royalty to the artist"
             );
@@ -219,14 +230,31 @@ contract EscrowHandler is Test {
         uint256 c = uint256(
             keccak256(
                 abi.encodePacked(
-                    "Proof House fake key v2", block.chainid, address(piece), buyer, uint256(vk), vm.createWallet(e).publicKeyX,
-                    S.publicKeyX, S.publicKeyY, A1.publicKeyX, A1.publicKeyY, A2.publicKeyX, A2.publicKeyY
+                    "Proof House fake key v2",
+                    block.chainid,
+                    address(piece),
+                    buyer,
+                    uint256(vk),
+                    vm.createWallet(e).publicKeyX,
+                    S.publicKeyX,
+                    S.publicKeyY,
+                    A1.publicKeyX,
+                    A1.publicKeyY,
+                    A2.publicKeyX,
+                    A2.publicKeyY
                 )
             )
         ) % N;
         Vm.Wallet memory X = vm.createWallet(mulmod(c, mulmod(b, e, N), N));
         return KeyProof.Proof(
-            S.publicKeyX, S.publicKeyY, A1.publicKeyX, A1.publicKeyY, A2.publicKeyX, A2.publicKeyY, X.publicKeyX, X.publicKeyY,
+            S.publicKeyX,
+            S.publicKeyY,
+            A1.publicKeyX,
+            A1.publicKeyY,
+            A2.publicKeyX,
+            A2.publicKeyY,
+            X.publicKeyX,
+            X.publicKeyY,
             addmod(w, mulmod(c, b, N), N)
         );
     }

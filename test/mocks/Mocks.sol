@@ -132,7 +132,9 @@ contract HostilePoints {
 
     fallback() external {
         uint256 m = mode;
-        if (m == 0) while (true) {}
+        if (m == 0) {
+            while (true) {}
+        }
         if (m == 1) return;
         if (m == 3) {
             assembly {

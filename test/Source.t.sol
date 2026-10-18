@@ -198,7 +198,9 @@ contract ArtifactsSourceTest is Fixture {
             uint256 dotsAt = Base64Decode.indexOf(framed, bytes("<circle"), 0);
             frameOnly =
                 bytes.concat(Base64Decode.slice(framed, 0, dotsAt), Base64Decode.slice(framed, frameAt, framed.length));
-            assertEq(sealSvg, Base64Decode.withMark(frameOnly, Seal.SEALED_MARK), "THE SOURCE seal differs from R9 frame");
+            assertEq(
+                sealSvg, Base64Decode.withMark(frameOnly, Seal.SEALED_MARK), "THE SOURCE seal differs from R9 frame"
+            );
         }
         // only the owner, only with the committed key, only once
         vm.prank(bob);
@@ -237,7 +239,11 @@ contract ArtifactsSourceTest is Fixture {
         uint256 at = Base64Decode.indexOf(meta, bytes('"animation_url":"data:text/html;base64,'), 0) + 39;
         uint256 end = Base64Decode.indexOf(meta, bytes('"}'), at);
         bytes memory shown = Base64Decode.decode(Base64Decode.slice(meta, at, end));
-        assertEq(keccak256(shown), keccak256(bytes.concat(page, bytes(seedHex), bytes(piece.RENDER_SUFFIX()))), "page differs");
+        assertEq(
+            keccak256(shown),
+            keccak256(bytes.concat(page, bytes(seedHex), bytes(piece.RENDER_SUFFIX()))),
+            "page differs"
+        );
         // the still image is the same frame, now marked REVEALED (the art is the animation); the seed is a public
         // attribute; the name holds
         assertTrue(Base64Decode.indexOf(meta, bytes.concat('"Seed","value":"', bytes(seedHex), '"'), 0) > 0);

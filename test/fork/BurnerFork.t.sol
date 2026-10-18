@@ -60,7 +60,8 @@ contract BurnerForkTest is Test {
     }
 
     function test_fork_aBurnerFixedToAPoolThatDoesNotExistRefuses() public {
-        ImdBuybackBurner wrong = new ImdBuybackBurner(address(new OwnedStub(curator)), POOL_MANAGER, IMD, 3000, 60, address(0));
+        ImdBuybackBurner wrong =
+            new ImdBuybackBurner(address(new OwnedStub(curator)), POOL_MANAGER, IMD, 3000, 60, address(0));
         vm.deal(address(wrong), 1 ether);
         vm.prank(curator);
         vm.expectRevert();

@@ -83,7 +83,11 @@ contract LedgerHandler is Test {
         return brokers[(seed / 5) % brokers.length];
     }
 
-    function _bps(address collection) internal view returns (address artist, uint16 bb, uint16 hb, uint16 ab, uint16 ub) {
+    function _bps(address collection)
+        internal
+        view
+        returns (address artist, uint16 bb, uint16 hb, uint16 ab, uint16 ub)
+    {
         (,,,, artist, bb, hb, ab,,,, ub) = house.collections(collection);
     }
 

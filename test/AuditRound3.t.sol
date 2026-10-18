@@ -34,9 +34,15 @@ contract ReentryPayout {
         if (how == 0) return;
         armed = 0;
         if (how == 1) {
-            try piece.list(1) {} catch { listFailed = true; }
+            try piece.list(1) {}
+            catch {
+                listFailed = true;
+            }
         } else {
-            try piece.transferFrom(address(this), address(0xBEEF), 1) {} catch { moveFailed = true; }
+            try piece.transferFrom(address(this), address(0xBEEF), 1) {}
+            catch {
+                moveFailed = true;
+            }
         }
     }
 }
@@ -104,7 +110,11 @@ contract AuditRound3Test is Fixture {
         _releaseArmed(2);
         assertTrue(evil.moveFailed());
         assertEq(piece.wrappedKey(), _wrappedOf("key"), "the buyer has its key");
-        assertEq(piece.pendingWithdrawals(address(evil)), 10 ether - 0.75 ether + 1 ether, "price less royalty, and the deposit");
+        assertEq(
+            piece.pendingWithdrawals(address(evil)),
+            10 ether - 0.75 ether + 1 ether,
+            "price less royalty, and the deposit"
+        );
     }
 
     function test_aReturnDataBombCostsThePayerNothing() public {
