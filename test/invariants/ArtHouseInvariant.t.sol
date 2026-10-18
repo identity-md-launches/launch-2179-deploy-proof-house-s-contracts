@@ -63,7 +63,7 @@ contract LedgerHandler is Test {
     // ---------- helpers ----------
 
     function parties() public view returns (address[] memory p) {
-        p = new address[](artists.length + brokers.length + 1);
+        p = new address[](artists.length + brokers.length + 2);
         uint256 n;
         for (uint256 i; i < artists.length; ++i) {
             p[n++] = artists[i];
@@ -71,19 +71,20 @@ contract LedgerHandler is Test {
         for (uint256 i; i < brokers.length; ++i) {
             p[n++] = brokers[i];
         }
-        p[n] = address(house);
+        p[n++] = address(house);
+        p[n] = house.BUYBACK();
     }
 
     function _pickBroker(uint256 seed, address buyer) internal view returns (address) {
         uint256 k = seed % 5;
         if (k == 0) return address(0);
-        if (k == 1) return buyer; // broker is the buyer: no commission
+        if (k == 1) return buyer; // the buyer brokers their own buy: earns only if eligible
         if (k == 2) return buyers[(seed / 5) % buyers.length]; // a random non-broker
         return brokers[(seed / 5) % brokers.length];
     }
 
-    function _bps(address collection) internal view returns (address artist, uint16 bb, uint16 hb, uint16 ab) {
-        (,,,, artist, bb, hb, ab,,,) = house.collections(collection);
+    function _bps(address collection) internal view returns (address artist, uint16 bb, uint16 hb, uint16 ab, uint16 ub) {
+        (,,,, artist, bb, hb, ab,,,, ub) = house.collections(collection);
     }
 
     /// @dev Snapshot of every party's balance in `currency`, then the exact split after a sale of `amount`.
@@ -103,13 +104,15 @@ contract LedgerHandler is Test {
         uint256 amount,
         uint256[] memory before
     ) internal {
-        (address artist, uint16 bb, uint16 hb, uint16 ab) = _bps(collection);
+        (address artist, uint16 bb, uint16 hb, uint16 ab, uint16 ub) = _bps(collection);
         uint256 artistShare = (amount * ab) / 10_000;
-        bool eligible = broker != buyer && house.isEligibleBroker(broker);
+        bool eligible = house.isEligibleBroker(broker);
         uint256 brokerShare = eligible ? (amount * bb) / 10_000 : 0;
-        uint256 houseShare = amount - artistShare - brokerShare;
+        // the burn share, plus any unearned broker share
+        uint256 burnShare = (amount * ub) / 10_000 + (eligible ? 0 : (amount * bb) / 10_000);
+        uint256 houseShare = amount - artistShare - brokerShare - burnShare;
         if (hb == 0) {
-            // no house share: the artist takes the rounding and any unearned broker share
+            // no house share: the artist takes the rounding
             artistShare += houseShare;
             houseShare = 0;
         } else {
@@ -121,6 +124,7 @@ contract LedgerHandler is Test {
             if (p[i] == artist) expected += artistShare;
             if (eligible && p[i] == broker) expected += brokerShare;
             if (p[i] == address(house)) expected += houseShare;
+            if (p[i] == house.BUYBACK()) expected += burnShare;
             assertEq(house.balances(p[i], currency) - before[i], expected, "split delta");
             credited[p[i]][currency] += expected;
         }
@@ -133,7 +137,7 @@ contract LedgerHandler is Test {
         address buyer = buyers[buyerSeed % buyers.length];
         uint256 pieceId = pieceSeed % PIECES;
         address b = _pickBroker(brokerSeed, buyer);
-        (,, bool open,,,,,,, uint256 priceETH,) = house.collections(address(col));
+        (,, bool open,,,,,,, uint256 priceETH,,) = house.collections(address(col));
         if (!open || priceETH == 0 || mintedBy[pieceId] != address(0)) {
             vm.deal(buyer, priceETH);
             vm.prank(buyer);
@@ -156,7 +160,7 @@ contract LedgerHandler is Test {
         address buyer = buyers[buyerSeed % buyers.length];
         uint256 pieceId = pieceSeed % PIECES;
         address b = _pickBroker(brokerSeed, buyer);
-        (,, bool open,,,,,,,, uint256 priceIMD) = house.collections(address(col));
+        (,, bool open,,,,,,,, uint256 priceIMD,) = house.collections(address(col));
         if (!open || priceIMD == 0 || mintedBy[pieceId] != address(0)) {
             vm.prank(buyer);
             vm.expectRevert();
@@ -193,7 +197,7 @@ contract LedgerHandler is Test {
 
     function withdraw(uint256 partySeed, bool eth) external {
         address[] memory p = parties();
-        address party = p[partySeed % (p.length - 1)]; // artists and brokers, not the house
+        address party = p[partySeed % (p.length - 2)]; // artists and brokers, not the house or the buyback
         address currency = eth ? address(0) : address(imd);
         uint256 amount = house.balances(party, currency);
         if (amount == 0) {
@@ -235,12 +239,32 @@ contract LedgerHandler is Test {
         else imdOut += amount;
     }
 
-    function setSplit(bool onModule, uint16 bb, uint16 hb) external {
+    function setSplit(bool onModule, uint16 bb, uint16 hb, uint16 ub) external {
         bb = uint16(bound(bb, 0, 10_000));
         hb = uint16(bound(hb, 0, 10_000 - bb));
-        uint16 ab = 10_000 - bb - hb;
+        ub = uint16(bound(ub, 0, 10_000 - bb - hb));
+        uint16 ab = 10_000 - bb - hb - ub;
         vm.prank(house.owner());
-        house.setSplit(onModule ? module : address(col), bb, hb, ab);
+        house.setSplit(onModule ? module : address(col), bb, hb, ab, ub);
+    }
+
+    /// @dev Anyone sends the buyback balance on, and only to the burner set at setup.
+    function releaseBuyback(bool eth, uint256 seed) external {
+        address currency = eth ? address(0) : address(imd);
+        address burner = house.buybackBurner();
+        uint256 amount = house.balances(house.BUYBACK(), currency);
+        vm.prank(buyers[seed % buyers.length]);
+        if (amount == 0) {
+            vm.expectRevert(ArtHouse.NothingToWithdraw.selector);
+            house.releaseBuyback(currency);
+            return;
+        }
+        uint256 toBefore = eth ? burner.balance : imd.balanceOf(burner);
+        house.releaseBuyback(currency);
+        assertEq((eth ? burner.balance : imd.balanceOf(burner)) - toBefore, amount, "all of it, to the burner");
+        withdrawn[house.BUYBACK()][currency] += amount;
+        if (eth) ethOut += amount;
+        else imdOut += amount;
     }
 
     function setBroker(uint256 seed, bool approved) external {
@@ -281,9 +305,11 @@ contract LedgerHandler is Test {
         vm.expectRevert();
         house.withdrawHouse(address(0));
         vm.expectRevert();
-        house.setSplit(address(col), 0, 0, 10_000);
+        house.setSplit(address(col), 0, 0, 10_000, 0);
         vm.expectRevert();
         house.setBroker(stranger, true);
+        vm.expectRevert();
+        house.setBuybackBurner(stranger);
         vm.deal(stranger, 1 ether);
         vm.expectRevert(ArtHouse.NotSaleModule.selector);
         house.recordSale{value: 1 ether}(module, stranger, address(0));
@@ -319,6 +345,7 @@ contract ArtHouseInvariantTest is Fixture {
         house.sealCollection(address(col));
         house.setPrices(address(col), 1 ether, 100e18);
         house.setSaleOpen(address(col), true);
+        house.setBuybackBurner(makeAddr("buybackBurner"));
         vm.stopPrank();
 
         address[] memory buyers = new address[](3);
@@ -381,7 +408,7 @@ contract ArtHouseInvariantTest is Fixture {
 
     /// @dev Supply is the registered pieces; a minted piece stays with its buyer; the seal never lifts.
     function invariant_supplyAndSeal() public view {
-        (,,, bool isSealed,,,,, uint256 pieceCount,,) = house.collections(address(col));
+        (,,, bool isSealed,,,,, uint256 pieceCount,,,) = house.collections(address(col));
         assertTrue(isSealed, "sealed forever");
         assertEq(pieceCount, 6, "supply fixed");
         uint256 minted;

@@ -154,12 +154,15 @@ contract FactoryHandler is Test {
         rerequests++;
     }
 
+    /// @dev Only the curator or the request's own buyer may ask again: anyone else is refused, even after the window.
     function strangerRerequest(uint256 idx) external {
         if (pending.length == 0) return;
         uint256 id = pending[idx % pending.length];
+        address who = buyers[idx % buyers.length];
+        if (who == requestBuyer[id]) who = address(0xBEEF);
         vm.roll(vm.getBlockNumber() + factory.VRF_RETRY_BLOCKS());
-        vm.prank(buyers[idx % buyers.length]);
-        vm.expectRevert();
+        vm.prank(who);
+        vm.expectRevert(ArtifactsFactory.NotBuyer.selector);
         factory.rerequestRandomness(id);
         assertEq(factory.requestBuyer(id), requestBuyer[id]);
     }
@@ -288,7 +291,7 @@ contract ArtifactsFactoryInvariantTest is Fixture {
         assertEq(address(house).balance, h.paid());
         assertEq(address(factory).balance, 0, "factory never keeps ETH");
         uint256 owed = house.balances(artist, address(0)) + house.balances(broker, address(0))
-            + house.balances(address(house), address(0));
+            + house.balances(address(house), address(0)) + house.balances(house.BUYBACK(), address(0));
         assertEq(owed, h.paid());
     }
 

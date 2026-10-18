@@ -1,8 +1,8 @@
-# ARTIFACTS — the rules (generative constitution)
+# ARTIFACTS: the rules (generative constitution)
 
 The ruleset by which every piece is made. Deterministic: render(seed) → image, always identical. Source of truth is Artifact Art/artifact.html; these rules formalize it so any implementation (incl. on-chain Solidity) matches byte-for-art.
 
-Order of operations and every constant below are normative — do not drift.
+Order of operations and every constant below are normative: do not drift.
 
 ## R0 · Principle
 The algorithm is public; the seed is the only secret. Output is a pure function of the seed (and, for the living version, block.timestamp). Same inputs → same pixels, forever, for anyone.
@@ -14,7 +14,7 @@ The seed is folded to a 32-bit render key: key = (seed * 2654435761) >>> 0.
 ## R2 · RNG (locked)
 Sine and arc tangent (R6, R7, R9) are the correctly rounded IEEE-754 doubles of the true values, computed exactly in rules.js with BigInt, never a platform's Math.sin / Math.atan2 (V8's differ in the last bit on ~3% / ~18% of inputs). Every engine and language then draws the same bytes; all reference pieces rebuild unchanged.
 
-mulberry32(a) — the only PRNG. Three independent, position-addressed streams per cell:
+mulberry32(a) is the only PRNG. Three independent, position-addressed streams per cell:
 
 ```
 mulberry32(a): a|=0; a=a+0x6D2B79F5|0;
@@ -23,12 +23,12 @@ mulberry32(a): a|=0; a=a+0x6D2B79F5|0;
   return ((t ^ t>>>14) >>> 0) / 4294967296;
 ```
 
-- Trait stream: rng = mulberry32(key) — draws consumed in the exact order of R3.
+- Trait stream: rng = mulberry32(key); draws are consumed in the exact order of R3.
 - Noise stream (per cell): mulberry32((seed*73856093 + x*19349663 + y*83492791) >>> 0)
 - Density stream (per cell): mulberry32((seed*2246822519 + x*3266489917 + y*668265263) >>> 0)
 
-## R3 · Trait derivation — exact draw order
-From the trait stream rng, in this order (no reordering — the sequence IS the identity):
+## R3 · Trait derivation: exact draw order
+From the trait stream rng, in this order (no reordering: the sequence IS the identity):
 
 1. palette = PALETTES[floor(rng()*34)]
 2. title = TITLES[floor(rng()*10)]
@@ -44,9 +44,9 @@ From the trait stream rng, in this order (no reordering — the sequence IS the 
 Public traits (shown in the frame + metadata): title, palette name, k, direction. Everything else is derived and sealed with the seed.
 
 ## R4 · Vocabularies (fixed sets)
-- 34 palettes — harmonized HSL stop-lists (SUNSET, AURORA, NEON, TROPIC, PLASMA, OCEAN, MIAMI, ELECTRIC, FIRE, PRISM, BRUISE, VAPOR, EMBER, ICE, ROSE, LIME, DUSK, MAGMA, JADE, ULTRA, STORM, CITRUS, BERRY, LAGOON, MARS, COSMIC, GOLD, TWILIGHT, ACID, COBALT, BLOOD, SEAFOAM, PEACH, VOID). Exact stops in artifact.html.
-- 10 titles — SPECTRUM, CHROMA, BLOOM, STIPPLE, DRIFT, HALFTONE, PRISM, RADIATE, FIELD, FLUX.
-- 8 directions — 0 VERTICAL, 1 HORIZONTAL, 2 DIAGONAL, 3 RADIAL, 4 ANTIDIAG, 5 CONIC, 6 DIAMOND, 7 SPIRAL.
+- 34 palettes: harmonized HSL stop-lists (SUNSET, AURORA, NEON, TROPIC, PLASMA, OCEAN, MIAMI, ELECTRIC, FIRE, PRISM, BRUISE, VAPOR, EMBER, ICE, ROSE, LIME, DUSK, MAGMA, JADE, ULTRA, STORM, CITRUS, BERRY, LAGOON, MARS, COSMIC, GOLD, TWILIGHT, ACID, COBALT, BLOOD, SEAFOAM, PEACH, VOID). Exact stops in artifact.html.
+- 10 titles: SPECTRUM, CHROMA, BLOOM, STIPPLE, DRIFT, HALFTONE, PRISM, RADIATE, FIELD, FLUX.
+- 8 directions: 0 VERTICAL, 1 HORIZONTAL, 2 DIAGONAL, 3 RADIAL, 4 ANTIDIAG, 5 CONIC, 6 DIAMOND, 7 SPIRAL.
 
 ## R5 · Gradient
 - reduceStops(stops, k): k evenly-indexed stops (round(i*(len-1)/(k-1))).
@@ -78,19 +78,19 @@ Grid COLS = 156 × ROWS = 146. For each cell (x,y):
 
 (cw = cell width from the locked layout; frame font pinned at 11px advance 6.6015625.)
 
-## R8 · The frame (part of the art — not chrome)
+## R8 · The frame (part of the art, not chrome)
 Baked into the render output. OS-window:
 - Double-line border, window centered on the sheet.
 - Menu bar: File  View  Run (left) · title (right).
-- Status bar: PALETTE · kC · DIRECTION (left) · SEED nnn (right). The status bar carries the piece's identity; the frame travels with every render at any resolution.
+- Status bar: PALETTE · kC · DIRECTION (left) · No. nnn, the edition's number (right). The status bar carries the piece's identity; the frame travels with every render at any resolution. A study or demo drawn without an edition number shows SEED nnn there instead (its seed, padded to three digits); an edition's real seed is 256 bits and is never printed.
 
-## R9 · THE SOURCE (master) — the exceptions
+## R9 · THE SOURCE (master): the exceptions
 - t = nx·0.6 + ny·0.4 (full-prism diagonal); stops = PRISM 9-stop, positions [0,⅛,…,1].
 - Drift fixed: amp=8, f1=.07, f2=.03, p1=1.3, p2=3.9; tt uses dr·0.004.
 - Noise/density streams keyed from two secret 32-bit words, n1 and n2 in place of 7777 / 7778: the low two words of THE SOURCE's own 256-bit seed, made with a CSPRNG in the offline ceremony and never published. The approved study (`framed-MASTER.svg`) uses 7777 / 7778 and is public; THE SOURCE shares its composition, palette, drift and frame, and only its dot field is secret. The chain stores its seed, encrypted, never its image (PROTOCOL.md).
 - Density 0.7; radius cw·(0.08 + vibr·0.2); clamps s∈[58,95], l∈[36,66].
 - Frame: title ARTIFACTS ◆ MASTER, menu File View **Reveal**, status THE SOURCE · FIDELITY · MAX · 1/1.
-- Carries a one-time reveal: its owner publishes its content key, and it becomes public — the only piece that can.
+- Carries a one-time reveal: its owner publishes its content key, and it becomes public: the only piece that can.
 
 ## R10 · Animation (on-chain, no JS)
 Marketplaces render NFTs as `<img>` SVG where JS never runs → animate with SMIL only. Wrap the dot group in one hue-rotate:
@@ -110,7 +110,7 @@ Living render is render(seed, E) where E derives from block.timestamp over a ~1-
 - hue baseline += E·360 (editions bounded ~±; master full turn)
 - density breathes ×(1 + 0.12·sin(E·2π))
 
-Deterministic and verifiable from seed + block. No re-rolls, no new token — the same piece, alive.
+Deterministic and verifiable from seed + block. No re-rolls, no new token: the same piece, alive.
 
 ## R12 · Fixed vs. living
 
@@ -125,13 +125,13 @@ Deterministic and verifiable from seed + block. No re-rolls, no new token — th
 Only ciphertext_seed + per-owner wrapped_K are on-chain; viewing is an off-chain signature gated to the owner; render is client-side; seed discarded after. Full rules in SEED-SECURITY-SPEC.md.
 
 ## The short version
-One algorithm. 256 seeds. The seed picks a palette, a direction, a character — then lays a halftone spectrum inside its own window, signs it with its traits, and (as a living piece) drifts its weather with the chain while its identity never moves. Encrypted, so only the owner sees it. One of the 256 can choose, once and forever, to be seen by everyone.
+One algorithm. 256 seeds. The seed picks a palette, a direction, a character, then lays a halftone spectrum inside its own window, signs it with its traits, and (as a living piece) drifts its weather with the chain while its identity never moves. Encrypted, so only the owner sees it. One of the 256 can choose, once and forever, to be seen by everyone.
 
 ---
 
 ## Implementation notes (added with the reference renderer; they pin down the rules, they don't change them)
 
 - **The framed pieces are the ground truth for the sheet and frame.** The pieces in `reference/framed/` use a 1080 × 1080 white sheet; the window at (200, 220), 680 × 640, with a second border inset 3.2; Menlo 12.5 px text with 0.5 letter-spacing; menu text at y = 250, dividers at y = 266 and 814, status text at y = 833; the dot field from x = 218 to 862 and y = 280 to 800. (`artifact.html` draws a 1080 × 900 sheet with the title in the top border, and R7's 11 px note comes from it.)
-- **Integer arithmetic.** R1 and R2 are written in JavaScript number terms. For a 256-bit seed, every product is taken mod 2^32 on the seed's low 32 bits (in JavaScript, `Math.imul`). This gives identical results for seeds 0–255, so no existing piece changes, and it is the only reading under which JavaScript and Solidity agree for real seeds.
+- **Integer arithmetic.** R1 and R2 are written in JavaScript number terms. For a 256-bit seed, every product is taken mod 2^32 on the seed's low 32 bits (in JavaScript, `Math.imul`). This gives identical results for seeds 0 to 255, so no existing piece changes, and it is the only reading under which JavaScript and Solidity agree for real seeds.
 - **Output rounding**, as in the framed SVGs: `cx` and `cy` to 1 decimal, `r` to 2 decimals, `hsl(round(h), round(s)%, round(l)%)`, dots in row order.
 - **Acceptance test.** `reference/rules.js` rebuilds all 11 pieces in `reference/framed/` byte for byte (188,333 dots); `node reference/check-framed.js` proves it. Any other implementation, including the on-chain renderer, must pass the same test.

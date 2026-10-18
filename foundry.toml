@@ -11,7 +11,7 @@ via_ir = true
 bytecode_hash = "none"
 cbor_metadata = false
 ffi = false
-fs_permissions = [{ access = "read", path = "./reference" }]
+fs_permissions = [{ access = "read", path = "./reference" }, { access = "read", path = "./test/fixtures" }]
 gas_limit = "18446744073709551615"
 memory_limit = 1073741824
 

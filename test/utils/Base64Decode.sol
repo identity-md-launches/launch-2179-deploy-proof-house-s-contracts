@@ -64,6 +64,13 @@ library Base64Decode {
         }
     }
 
+    /// @dev A reference frame with the seal's mark added where the contract puts it: just before the closing </svg>.
+    function withMark(bytes memory svg, string memory mark) internal pure returns (bytes memory) {
+        uint256 end = svg.length - 6;
+        require(keccak256(slice(svg, end, svg.length)) == keccak256("</svg>"), "no closing svg");
+        return bytes.concat(slice(svg, 0, end), bytes(mark), "</svg>");
+    }
+
     /// @dev Index of the first occurrence of `needle` in `hay` at or after `from`; reverts if absent.
     function indexOf(bytes memory hay, bytes memory needle, uint256 from) internal pure returns (uint256) {
         bytes32 h = keccak256(needle);

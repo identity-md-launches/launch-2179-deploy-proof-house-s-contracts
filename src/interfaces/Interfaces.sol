@@ -13,6 +13,7 @@ interface IERC2981 {
 
 interface IArtHouse {
     function recordSale(address collection, address buyer, address broker) external payable;
+    function canRecordSale(address module) external view returns (bool);
     function recordResale(address broker, uint256 royalty, uint256 brokerShare) external payable;
     function isEligibleBroker(address broker) external view returns (bool);
     function royaltyFor(address collection, uint256 salePrice) external view returns (address, uint256);
@@ -59,7 +60,8 @@ interface IArtifactsPiece {
         address ciphertext,
         bytes32 commitment,
         bytes calldata wrappedKey,
-        bool isSource
+        bool isSource,
+        bytes32 ownerViewingKey
     ) external;
     function rewrapFor(bytes calldata wrapped) external;
     function ownerOf(uint256 tokenId) external view returns (address);
@@ -76,6 +78,10 @@ interface IPieceController {
 
 interface IBalanceOf {
     function balanceOf(address account) external view returns (uint256);
+}
+
+interface IOwnerOf {
+    function ownerOf(uint256 tokenId) external view returns (address);
 }
 
 /// @notice What an ArtifactsPiece needs from THE SOURCE's controller to serve the revealed tokenURI.

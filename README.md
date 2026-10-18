@@ -1,88 +1,131 @@
-# Proof House — contracts
+# Proof House contracts
 
 Proof House is a curator-run house for fully on-chain art bought by people and AI agents, with agents as
 brokers. This repository holds its Sepolia contracts and the first collection, **ARTIFACTS**: 256 encrypted
-generative pieces — 255 editions and THE SOURCE. Reference: https://github.com/mylesdaughtry/proof-house
+generative pieces: 255 editions and THE SOURCE. Reference: https://github.com/mylesdaughtry/proof-house
 (its `RULES.md`, `PROTOCOL.md`, reference renderer `rules.js` and THE SOURCE's renderer page are vendored under
 `reference/`).
 
-No fungible token is created and there is no pool. IMD (`0x44a1Cd38474FB1748400E7DEb5F8D786ccE3F89A` on Sepolia)
-is an existing ERC-20 that buyers of plain collections may pay with. The only tokens are ERC-721 pieces, minted
+No fungible token or pool is created. IMD (`0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7` on mainnet,
+`0x44a1Cd38474FB1748400E7DEb5F8D786ccE3F89A` on Sepolia) is an existing ERC-20 that buyers of plain collections may
+pay with; the buyback swaps on IMD's existing ETH/IMD Uniswap v4 pool. The only tokens are ERC-721 pieces, minted
 only when a piece is bought.
 
-## Launch set (5 contracts, deployed in this order)
+## Launch set (8 contracts by IMD, in this order, from `launch.json`; then the burner, from `launch.burner.json`)
 
 | # | Contract | Constructor | Role |
 |---|----------|-------------|------|
 | 0 | `ArtStorage` | `($owner)` | SSTORE2 chunk store for plain SVG collections; written only by ArtHouse |
 | 1 | `ArtHouse` | `($owner, $contract:ArtStorage, IMD)` | The ledger: artists, brokers, sale modules, splits, balances, plain collections, submissions. Its constructor deploys the `ArtCollection` implementation. |
-| 2 | `ArtifactsPiece` | `()` | Locked implementation: a one-token ERC-721 + ERC-2981 per piece (clone per edition; full copy for THE SOURCE) |
+| 1b | `KeyProof` | `()` | Stateless checker: proves a resale's wrapped key doesn't open its piece (Chaum-Pedersen on secp256k1, checked with ecrecover and modexp); a key that opens can never be proven fake |
+| 2 | `ArtifactsPiece` | `($contract:KeyProof)` | Locked implementation: a one-token ERC-721 + ERC-2981 per piece (clone per edition; full copy for THE SOURCE); its resale escrow takes a 10% seller deposit with the key, returned at release, the buyer's if the key is proven fake |
 | 3 | `ArtifactsFactory` | `($owner, $contract:ArtHouse, $contract:ArtifactsPiece)` | Publishes the 255 editions, sells them, VRF assignment, claims |
 | 4 | `ArtifactsSource` | `($owner, $contract:ArtHouse, $contract:ArtifactsPiece)` | THE SOURCE: encrypted payload, single-lot auction, settlement, one key delivery |
+| 5 | `BrokerPass` | `(identity.md seats, $contract:ArtifactsFactory, $contract:ArtifactsSource)` | 100 free passes that make a wallet a broker: one per seat or piece and one per wallet, ever; claims open at a start time the factory's owner sets once (`setClaimsOpenAt`) |
+| 6 | `SubmissionReviews` | `($contract:ArtHouse, identity.md seats, $contract:ArtifactsFactory, $contract:ArtifactsSource)` | Advisory reviews of artist submissions: one voice per identity.md seat and per claimed piece; frozen once the curator decides; no owner |
+| after | `ImdBuybackBurner` | `($contract:ArtHouse, Uniswap v4 PoolManager, IMD, 10000, 200, 0x0)` | Not in IMD's launch (an `evm_contracts` launch deploys at most 8 contracts, with unsigned-integer arguments; its tick spacing is an `int24`): the curator deploys it right after with `tools/deploy/deploy_manifest.py --manifest launch.burner.json --existing <deployment.json>`, then `ArtHouse.setBuybackBurner`. Receives the ledger's buyback balance; the curator swaps ETH for IMD on the ETH/IMD pool fixed here for good (1% fee, tick spacing 200, no hook), always with a minimum above zero and a deadline, the IMD going straight to the dead address; after 60 days without a curator swap anyone may swap, exactly 0.05 ETH (or all that is left) once a day, so the ETH can't be stuck; anyone burns IMD it holds |
 
 `$owner` is the curator: `0xd3e32C1eBEa3a675EffCaAcAf89196948Abd1386`. `script/Deploy.s.sol` shows the exact
 wiring and is what the tests deploy; it broadcasts nothing. Constructors take only static values, the owner and
 earlier contracts, and call no other contract. ArtifactsSource was split out of ArtifactsFactory so every
-runtime stays well under the EIP-170 limit (largest: ArtifactsPiece, 18.5 KB).
+runtime stays under the EIP-170 limit of 24,576 bytes (largest: ArtifactsPiece, 24,252 bytes, 324 under it;
+`forge build --sizes`).
 
 Ownership is two-step everywhere (`transferOwnership` → `acceptOwnership`); there is no `renounceOwnership`,
 no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH leaves contracts by `call`, pull-style.
 
 ## After launch (curator, in this order)
 
-1. `ArtStorage.setHouse(ArtHouse)` — one time, irreversible.
+1. `ArtStorage.setHouse(ArtHouse)`: one time, irreversible.
 2. `ArtHouse.approveArtist(artist, name)` for the ARTIFACTS artist. The artist may `setPayout(address)` later;
    payout is kept across revoke/re-approval.
 3. `ArtHouse.setSaleModule(ArtifactsFactory, true)` and `ArtHouse.setSaleModule(ArtifactsSource, true)`.
 4. `ArtHouse.registerModuleCollection(ArtifactsFactory, artist)` and `…(ArtifactsSource, artist)` so their sales
-   split and pay royalties to that artist (default split 15% broker / 15% house / 70% artist; `setSplit` to change).
-5. `ArtHouse.setBroker(agent, true)` for each approved broker agent.
-6. `ArtifactsFactory.configureVRF(coordinator, keyHash, subscriptionId, nativePayment)` — **set once**. Values come
-   from Chainlink's published Sepolia VRF v2.5 coordinator and key hash, and the curator's own subscription id
+   split and pay royalties to that artist (default split 75% artist / 15% broker / 5% house / 5% IMD buyback and burn;
+   with no eligible broker the broker's share goes to the buyback and burn, on every collection; `setSplit` to change).
+   THE SOURCE: `ArtHouse.setSplit(ArtifactsSource, 1500, 0, 8500, 0)` (15% broker, 85% artist, no house, no burn).
+5. `ArtHouse.setBroker(agent, true)` for each approved broker agent (brokers without a pass).
+5a. `ArtHouse.setBrokerPass(BrokerPass)` and `ArtHouse.setBuybackBurner(ImdBuybackBurner)`: each one time, irreversible.
+    `BrokerPass.setClaimsOpenAt(time)` at launch: one time; nobody can claim before it.
+6. `ArtifactsFactory.configureVRF(coordinator, keyHash, subscriptionId, nativePayment)`: can be set, and corrected,
+   until the edition sale first opens; from then on it is locked forever. Values come
+   from Chainlink's published VRF v2.5 coordinator and key hash, and the curator's own subscription id
    (create it at vrf.chain.link, fund it, and add ArtifactsFactory as a consumer). `nativePayment=false` pays in
-   LINK, `true` in ETH. Buying reverts with `VRFNotConfigured` until this is done; it cannot be changed afterwards.
+   LINK, `true` in ETH. Buying reverts with `VRFNotConfigured` until this is done.
+   `setVRFCallbackGas(gas)`: any value from 150,000 to 2,500,000 before the sale opens; after it opens, only up.
 7. `ArtifactsFactory.setPiece(id, traits, ciphertext, commitment)` for ids 1..255: public traits (title, palette,
-   colour count, direction), the AES-256-GCM encrypted seed and `keccak256(K)`. Then `lock()` — forever.
-8. `ArtifactsFactory.setPrice(wei)` (above zero, only while closed) and `setSaleOpen(true)`.
-9. THE SOURCE: the artist's offline ceremony (`tools/source/ceremony.js` in the Proof House workspace) makes its
+   colour count, direction), the AES-256-GCM encrypted seed and `keccak256(K)`. Then `lock()`, forever.
+8. THE SOURCE: the artist's offline ceremony (`tools/source/ceremony.js` in the Proof House workspace) makes its
    secret seed and key K and writes `the-source.renderer.html` (the rules in a page, ≈12.8 KB, public) and
    `the-source.public.json` (`sealedSeed = seed XOR keccak256(K ‖ uint256(0))`, `keyCommitment = keccak256(K)`).
    `ArtifactsSource.storeRendererChunk(bytes)` with the page (one chunk), then `lock(sealedSeed, keyCommitment)`.
-   `rendererHash()` must equal the ceremony's `rendererHash`. Then `setAuction(reserveWei, endTime)`. The tests use
+   `rendererHash()` must equal the ceremony's `rendererHash`. The tests use
    `reference/the-source.renderer.html` and a test seed and key.
+9. Holders first: `setGate(seats, IMD, minBalance, seconds)` on both. ArtifactsSource: 30 days (holders only for the
+   whole auction), changeable until the first bid. ArtifactsFactory: 24 hours, plus `setMintPhases(12 h, 2, 12 h, 3)`,
+   both fixed once the sale first opens. Then `ArtifactsSource.setAuction(reserveWei, endTime)`.
+10. Once THE SOURCE's auction has closed: `ArtifactsFactory.setPrice(wei)` (above zero, only while closed) and
+    `setSaleOpen(true)`.
 
 ## ARTIFACTS flow
 
-- **Buy editions**: `ArtifactsFactory.buyMany{value: price × n}(n, broker)` (1–5; five per wallet in all, `mintedBy`,
-  `allowanceOf`) or `buy{value: price}(broker)` for one. State is written, the ETH goes to
-  `ArtHouse.recordSale` (credits written before any transfer), then a VRF v2.5 request is made. The callback
+- **Buy editions**: `ArtifactsFactory.buyMany{value: price × n}(n, broker)` (1 to 5; five per wallet in all, `mintedBy`,
+  `allowanceOf`) or `buy{value: price}(broker)` for one; in the holders window a seat holder uses
+  `buyWithSeat(seatId, n, broker)`. Mint phases (`setMintPhases`, `currentPhase()`) cap each wallet and each seat
+  from when the sale opens: at launch up to 2 for 12 hours, then up to 3 in all for 12 hours (both holders only), then
+  up to 5 in all, public. State is written, the ETH goes to `ArtHouse.recordSale` (credits written before any
+  transfer), then a VRF v2.5 request is made. The callback
   `rawFulfillRandomWords` (coordinator only) assigns a uniformly random unassigned edition by a lazy
   Fisher-Yates over 1..255: none twice, none skipped (tested over all 255 purchases). Its gas limit is
-  `vrfCallbackGas` (default 1,000,000; the curator sets 150k–2.5M with `setVRFCallbackGas`): one assignment cost
+  `vrfCallbackGas` (default 1,000,000; the curator sets 150k to 2.5M with `setVRFCallbackGas`): one assignment cost
   ≈150k gas under today's mainnet pricing and ≈670k under Glamsterdam's state repricing (measured on Sepolia, where
-  250k made every callback fail). If a callback fails or never comes, the curator
-  may `rerequestRandomness(requestId)` once `VRF_RETRY_BLOCKS` have passed: the old id is forgotten (a late
-  answer to it is rejected), a new request carries the same buyer, and the purchase still yields exactly one
-  edition. Watch `sold` vs `assigned` and the `Purchased`/`EditionAssigned`/`Rerequested` events.
-- **Claim**: buyer `registerViewingKey(x25519PublicKey)`; curator `postWrappedKey(edition, K wrapped to it)`;
-  buyer (or curator) `claim(edition)` deploys the EIP-1167 clone of ArtifactsPiece, named `ARTIFACTS #NNN`,
-  symbol `ARTIFACTS`, holding the ciphertext pointer, traits, commitment and wrapped key, and mints token 1 to
-  the buyer. There is no other mint path.
+  250k made every callback fail). If a draw will never be answered, the curator or the buyer may
+  `rerequestRandomness(requestId)`: at once if the coordinator already answered and the callback failed (its
+  `s_requestCommitments` entry is gone), otherwise once `VRF_RETRY_BLOCKS` (~25h) have passed, after Chainlink drops
+  an unanswered request (24h). So nobody can see an answer coming and swap it for a fresh draw. The old id is
+  forgotten (a late answer to it is rejected), a new request carries the same buyer, and the purchase still yields
+  exactly one edition. Not once a fallback draw has started. The last resort, if Chainlink never answers:
+  `FALLBACK_BLOCKS` (21,600, ~3 days) after the purchase (`purchaseBlock(id)`, carried across re-requests, so they
+  never push it back) anyone may `startFallbackDraw(id)`, which picks a block 5 ahead (`fallbackBlock(id)`), then
+  `finishFallbackDraw(id)` once that block exists. The edition is drawn from its hash: BLOCKHASH for 256 blocks, then
+  the EIP-2935 history contract (`BLOCK_HISTORY`, 8,191 blocks, ~27 h). A started draw's result stands: it can't be
+  re-requested away, and it can start again only once its block hash can no longer be read at all. Whoever builds
+  that block could steer its hash; this only applies after 3 days without Chainlink. Watch `sold` vs `assigned` and
+  the `Purchased`/`EditionAssigned`/`Rerequested`/`FallbackDrawStarted` events.
+- **Claim**: buyer `registerViewingKey(viewingKey)` (version 2: the x of a secp256k1 point, see PROTOCOL.md); the
+  curator wraps each K offline to its buyer's key and posts them with `postWrappedKeys(editions, wrapped)` (or
+  `postWrappedKey(edition, wrapped)`); buyer (or curator) `claim(edition)` (or `claimMany`) deploys the EIP-1167 clone
+  of ArtifactsPiece, named `ARTIFACTS #NNN`, symbol `ARTIFACTS`, holding the ciphertext pointer, traits, commitment
+  and wrapped key, and mints token 1 to the buyer. There is no other mint path. An edition whose key hasn't come
+  `KEY_WAIT` (30 days) after its draw can be claimed without it; the curator can still post the key into the piece
+  later (`postWrappedKeys` sends it on to the piece's `rewrapFor`).
 - **Seal**: each piece's `tokenURI` is on-chain base64 JSON whose image is the R8 frame (white sheet, double
   border, `File   View   Run` menu, title, status `PALETTE  ·  kC  ·  DIRECTION` / `SEED nnn`) with no dots;
   tested byte-for-byte against `framed-003.svg` with its dots removed.
-- **Resale escrow** (in each piece): owner `list(price)`; buyer `buy{value: price}(viewingKey)`; seller
-  `postEscrowKey(rewrapped)`; `release()` by the buyer, or by anyone after 72 hours; `cancel()` by the buyer until
-  the key is posted. Seller proceeds (minus the 7.5% royalty to the artist's payout) and refunds are pulled with
-  `withdraw()`. While a buyer's payment is in escrow the token cannot be transferred. Plain transfers stay allowed
-  and clear the wrapped key; the previous owner may `rewrapFor(bytes)` once the new owner registered a key.
+- **Resale escrow** (in each piece): owner `list(price)`; buyer `buy{value: price}(viewingKey, broker)`, where
+  `viewingKey` is a version 2 key (`KeyProof.isViewingKey`), kept in `escrow().viewingKey` (the site makes one per
+  piece); the seller wraps K to that key, not to `viewingKeyOf(buyer)`. Seller
+  `postEscrowKey{value: depositFor(price)}(wrapped, r, z)`: the 65-byte wrapped key, a 10% deposit (`DEPOSIT_BPS`),
+  and a Schnorr proof that the seller made it (`KeyProof.knowsWrap`: R = k·G given as its address `r`,
+  z = k + c·e mod n, c = keccak256("Proof House key wrap v2 proof" ‖ chainid ‖ piece ‖ buyer ‖ viewingKey ‖
+  keccak256(wrapped) ‖ r) mod n), so nobody can post a key built from someone else's E. For `SELLER_WINDOW`
+  (24 hours) from payment only the seller can end the sale: send the key, or `refundBuyer()` (only before the key).
+  After it the buyer may `cancel()`, while no key is posted: a key in a pending transaction is public, and without
+  the window a buyer could read it and cancel ahead of it. `release()` by the buyer once the key is posted, or by
+  anyone 72 hours (`ESCROW_TIMEOUT`) after it was posted: the seller gets the price less the 7.5% royalty and the 2.5%
+  broker share (if an eligible broker other than the seller was named; otherwise it stays with the seller), plus the
+  deposit. Until release the buyer may `proveFakeKey(proof)` (Chaum-Pedersen, `KeyProof.isFake`): the payment and the
+  deposit go to the buyer, the seller keeps the piece; a key that opens can never be proven fake. Proceeds and
+  refunds are pulled with `withdraw()`. While a buyer's payment is in escrow the token cannot be transferred (nor THE
+  SOURCE revealed). Plain transfers stay allowed and clear the wrapped key; the previous owner may `rewrapFor(bytes)`
+  once the new owner registered a key.
   Re-keying is one shot: the key slot must be empty, the key must not be empty (nor an escrow key), and posting
   ends the previous owner's right. A release clears it too, so a paid seller can never overwrite the key the
   buyer received. Viewing keys cannot be zero.
 - **THE SOURCE**: single-lot ETH auction. Each bid must be ≥ reserve and ≥ 105% of the high bid (the 5% raise
   rounds up, so a bid always strictly exceeds the high bid, even at dust sizes); a bid in the
   final 10 minutes moves the end to 10 minutes after it; outbid bids are refunded by `withdrawRefund()` (pull).
-  `settle()` sends the proceeds through the ledger and deploys THE SOURCE's own contract — a full byte copy of
+  `settle()` sends the proceeds through the ledger and deploys THE SOURCE's own contract: a full byte copy of
   ArtifactsPiece's runtime) named `ARTIFACTS · THE SOURCE`, carrying `commitment = keccak256(K)`. THE SOURCE is
   stored as a seed, never as an image: `sealedSeed = seed XOR keccak256(K ‖ uint256(0))`, plus the renderer page
   (the rules) that draws it. The winner registers a viewing key on THE SOURCE's contract; the curator calls
@@ -91,7 +134,9 @@ no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH lea
   that `tokenURI` is the R9 seal; after it, `revealedSeed()` is public and `tokenURI` keeps the seal as `image` and
   adds `animation_url = data:text/html;base64,` + the renderer page + the seed + `RENDER_SUFFIX`, which draws THE
   SOURCE byte for byte in any browser (≈2.75M gas; tested under 3M). If the auction ends with no bid the curator
-  may set it again.
+  may set it again. If it isn't settled within `SETTLE_GRACE` (7 days) of its end, anyone may `voidUnsettled()`: the
+  high bid is refunded (pull) and the curator may open it again. Its holders window (`setGate`) can be changed until
+  the first bid, then it is fixed.
 - **Views**: `price`, `remaining`, `editionsOf`, `pieceContract`, `traitsOf`, `ciphertextOf`, `commitmentOf`,
   `wrappedKeyOf`, `auctionState`, `sealedSeed`, `keyCommitment`, `keyDelivered`, `rendererChunks`, `revealed`,
   `revealKey`, `revealedSeed`.
@@ -109,8 +154,10 @@ kept). The curator may `clearPiece` while unfinalized and `sealCollection` once 
 broker, price)` needs `price` to equal the current IMD price and pulls exactly that. `submit(contentHash,
 previewURI)` is open to anyone; the curator `decideSubmission`.
 
-Every sale is split in basis points per collection (house takes rounding); a broker earns only if approved and
-not the buyer, otherwise its share goes to the house. Balances are per currency (ETH = address(0), IMD);
+Every sale is split in basis points per collection (house takes rounding); a broker earns if the curator approved
+it (`setBroker`) or it holds a Broker Pass at the time of the sale (`isEligibleBroker`), otherwise its share goes to
+the IMD buyback. A pass holder may name itself on its own bid, mint or resale purchase (a stated perk of the pass); a
+seller can never broker its own resale. Balances are per currency (ETH = address(0), IMD);
 artists and brokers `withdraw(currency)` their own (artists to their payout address); `withdrawHouse` pays the
 current owner. Every piece pays a 7.5% ERC-2981 royalty to its artist's payout address.
 
@@ -118,32 +165,51 @@ current owner. Every piece pays a 7.5% ERC-2981 royalty to its artist's payout a
 
 | Constant | Value | Where |
 |----------|-------|-------|
-| `vrfCallbackGas` (curator-set) | 1,000,000 default, 150,000–2,500,000 | ArtifactsFactory |
+| `vrfCallbackGas` (curator-set) | 1,000,000 default, 150,000 to 2,500,000; after the sale opens, only up | ArtifactsFactory |
 | `MAX_PER_WALLET` | 5 | ArtifactsFactory |
+| mint phases (`setMintPhases`) | launch: Allowlist 2 per wallet and per seat for 12 h, Allowlist overflow 3 in all for 12 h, then Public 5; set before the sale opens | ArtifactsFactory |
 | `VRF_CONFIRMATIONS` | 3 | ArtifactsFactory |
-| `VRF_RETRY_BLOCKS` | 600 (~2 h at 12 s blocks) | ArtifactsFactory |
+| `VRF_RETRY_BLOCKS` | 7,500 (~25 h at 12 s blocks) | ArtifactsFactory |
+| `FALLBACK_BLOCKS` / `FALLBACK_DELAY` | 21,600 (~3 days) from the purchase / 5 blocks | ArtifactsFactory |
+| `KEY_WAIT` | 30 days from the draw | ArtifactsFactory |
 | `MIN_RAISE_BPS` | 500 (5%) | ArtifactsSource |
 | `EXTENSION` | 10 minutes | ArtifactsSource |
-| `ESCROW_TIMEOUT` | 72 hours | ArtifactsPiece |
-| `ROYALTY_BPS` | 750 | ArtHouse / ArtifactsPiece |
-| default split | 1500 / 1500 / 7000 | ArtHouse |
+| `SETTLE_GRACE` | 7 days (then `voidUnsettled`) | ArtifactsSource |
+| `ESCROW_TIMEOUT` | 72 hours from the key | ArtifactsPiece |
+| `SELLER_WINDOW` | 24 hours from payment | ArtifactsPiece |
+| `DEPOSIT_BPS` | 1,000 (10% of the price) | ArtifactsPiece |
+| `ROYALTY_BPS` / `RESALE_BROKER_BPS` | 750 / 250 | ArtHouse, ArtifactsPiece / ArtifactsPiece |
+| default split (broker / house / artist / burn) | 1500 / 500 / 7500 / 500 (THE SOURCE: 1500 / 0 / 8500 / 0) | ArtHouse |
+| buyback balance | `balances[BUYBACK][currency]`, sent only to `buybackBurner` (set once) by `releaseBuyback` (anyone) | ArtHouse |
+| `IDLE` / `PUBLIC_MAX` / `PUBLIC_GAP` | 60 days without a curator swap / 0.05 ETH per public swap / 1 day between them | ImdBuybackBurner |
 | `MAX_PIECE_BYTES` | 100,000 | ArtHouse |
+| holders first (`setGate`) | first N hours of each sale: identity.md seat (editions: `buyWithSeat`, up to the phase's cap per seat) or `gateMinBalance` of IMD; ≤ 30 days; editions: fixed once the sale opens; THE SOURCE: until the first bid | ArtifactsFactory / ArtifactsSource |
 
 ## Trust assumptions and responsibilities
 
 - The curator (owner) approves artists, brokers and sale modules, sets prices and splits, publishes the
   ARTIFACTS ciphertexts/commitments before locking, posts first-claim wrapped keys, and runs THE SOURCE auction.
-  Until the last claim the curator holds every content key (PROTOCOL.md). The contracts cannot verify that a
-  wrapped key opens; a dishonest seller in escrow can post a bad (non-empty) key (disclosed in PROTOCOL.md).
+  Until each edition is claimed the curator holds its content key offline (PROTOCOL.md). In a resale, a key that
+  doesn't open can be proven fake on-chain (`proveFakeKey`, checked by KeyProof), which costs the seller the deposit.
+  Keys the curator posts (first claims, THE SOURCE) and re-keys after plain transfers carry no proof and can't be
+  proven fake on-chain: no payment rides on them (disclosed in PROTOCOL.md).
+- The buyback burner is set once (`setBuybackBurner`) and can never change, so what is set aside to burn can only
+  go there; until it is set, the buyback balance waits in the ledger. The burner contract itself (ETH to IMD on
+  IMD's Ethereum pool, then burned) is separate and is reviewed before it is set. Its pool is fixed at deployment,
+  so the curator can't route the ETH through a different pool. After 60 days without a curator swap anyone may swap,
+  0.05 ETH a day, so the ETH can't be stuck. A public caller picks their own minimum and could sandwich their own
+  swap; the small fixed step and one swap a day bound that.
 - `setSplit` is read at sale time: the curator can change a module collection's split while bids or purchases
   are pending (e.g. before THE SOURCE settles). This is an owner power by design, not a bypass; bidders trust the
   curator not to redirect the artist's or broker's share after the fact.
-- Chainlink VRF is the only randomness; the subscription must stay funded or purchases revert at request time.
+- Chainlink VRF is the randomness; the block-hash fallback (above) is only for a draw it hasn't answered in ~3 days.
+  The subscription must stay funded or purchases revert at request time.
   Chainlink only answers while the subscription holds a request's maximum cost: `vrfCallbackGas` plus overhead at
   the key hash's maximum gas price, plus its premium (e.g. ≈0.5 ETH at 1M gas on Sepolia's 500 gwei lane). The draw
   itself is charged at the real gas price.
   A purchase whose callback never arrives keeps the buyer's payment in the ledger with no edition until the
-  curator calls `rerequestRandomness` (above); only the curator can, so the buyer relies on the curator doing so.
+  curator or the buyer calls `rerequestRandomness`, or, after ~3 days, anyone runs the fallback draw (above).
+  Topping up an underfunded subscription within 24 hours lets Chainlink answer the original request instead.
   The mock coordinator in tests is not production randomness.
 - IMD is assumed to be a standard ERC-20 (no fee on transfer); `mintWithIMD` checks the balance delta.
 - Tests passing is not an audit. Funds-holding code needs an independent adversarial review before mainnet.

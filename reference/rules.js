@@ -1,4 +1,4 @@
-// ARTIFACTS reference renderer, written from "the rules (generative constitution)" R1–R9.
+// ARTIFACTS reference renderer, written from "the rules (generative constitution)" R1 to R9.
 // Integer steps use exact 32-bit arithmetic (Math.imul), so a 256-bit seed folds the same way in any language.
 'use strict';
 const PALETTES = [
@@ -121,8 +121,9 @@ function dots(seed, master) {
   }
   return { dots: out, T };
 }
-// R8 / R9: the framed sheet as one SVG file, in the exact form of artifacts-art/framed.
-function svg(seed, master) {
+// R8 / R9: the framed sheet as one SVG file, in the exact form of artifacts-art/framed. `id` is the edition's number
+// (R8 status bar); a study or demo rendered without one shows its seed there, as it always has.
+function svg(seed, master, id) {
   const { dots: ds, T } = dots(seed, master);
   const circles = ds.map((d) => `<circle cx="${d.cx.toFixed(1)}" cy="${d.cy.toFixed(1)}" r="${d.r.toFixed(2)}" fill="hsl(${Math.round(d.h)},${Math.round(d.s)}%,${Math.round(d.l)}%)"/>`).join('');
   const text = (x, y, anchor, str) => `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" font-size="12.5" text-anchor="${anchor}" xml:space="preserve">${str}</text>`;
@@ -130,7 +131,7 @@ function svg(seed, master) {
   const menu = 'File   View   ' + (master ? 'Reveal' : 'Run');
   const title = master ? 'ARTIFACTS  ◆  MASTER' : T.title;
   const statusL = master ? 'THE SOURCE' : `${T.pal.name}  ·  ${T.k}C  ·  ${DIRS[T.dir]}`;
-  const statusR = master ? 'FIDELITY · MAX · 1/1' : 'SEED ' + String(Number(BigInt(seed))).padStart(3, '0');
+  const statusR = master ? 'FIDELITY · MAX · 1/1' : id ? 'No. ' + String(id).padStart(3, '0') : 'SEED ' + String(Number(BigInt(seed))).padStart(3, '0');
   const frame = '<g fill="#1a1a1a" font-family="Menlo, ui-monospace, monospace" dominant-baseline="middle" letter-spacing="0.5">'
     + `<rect x="${FX}" y="${FY}" width="${FBW}" height="${FBH}" fill="none" stroke="#1a1a1a" stroke-width="1.3"/>`
     + `<rect x="${(FX + GAP).toFixed(1)}" y="${(FY + GAP).toFixed(1)}" width="${(FBW - 2 * GAP).toFixed(1)}" height="${(FBH - 2 * GAP).toFixed(1)}" fill="none" stroke="#1a1a1a" stroke-width="1.3"/>`

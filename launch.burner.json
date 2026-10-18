@@ -1,0 +1,17 @@
+{
+ "kind": "evm_contracts",
+ "contracts": [
+  {
+   "contract": "ImdBuybackBurner",
+   "constructorArgs": [
+    "$contract:ArtHouse",
+    "0x000000000004444c5dc75cB358380D2e3dE08A90",
+    "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7",
+    "10000",
+    "200",
+    "0x0000000000000000000000000000000000000000"
+   ]
+  }
+ ],
+ "notes": "Deployed by the curator right after the IMD launch, outside it (an evm_contracts launch deploys at most 8 contracts, and its tick spacing is a signed int24). $contract:ArtHouse is the ArtHouse that launch deployed. It has no owner: swaps are ArtHouse's owner's (anyone's after 60 days without one). ImdBuybackBurner: receives ArtHouse's buyback balance; the owner swaps ETH for IMD on the ETH/IMD Uniswap v4 pool (PoolManager 0x000000000004444c5dc75cB358380D2e3dE08A90; fee 10000, tick spacing 200, no hook, fixed at deployment) with a minimum out above zero and a deadline, the IMD going straight to 0x000000000000000000000000000000000000dEaD; after 60 days without an owner swap anyone may swap, exactly 0.05 ETH (or what is left) once a day, so the ETH can't be stuck; anyone burns IMD it holds. Then ArtHouse.setBuybackBurner(this), once."
+}

@@ -68,7 +68,7 @@ library Encoding {
         return string(buffer);
     }
 
-    /// @dev Three-digit zero-padded number, as in "SEED 003" and "ARTIFACTS #003".
+    /// @dev Three-digit zero-padded number, as in "No. 003" and "ARTIFACTS #003".
     function pad3(uint256 value) internal pure returns (string memory) {
         bytes memory b = new bytes(3);
         b[0] = bytes1(uint8(48 + (value / 100) % 10));

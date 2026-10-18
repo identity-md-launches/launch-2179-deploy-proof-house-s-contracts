@@ -199,7 +199,7 @@ contract SourceAuctionInvariantTest is Fixture {
             assertEq(ArtifactsPiece(source.pieceContract()).ownerOf(1), source.highBidder());
             assertEq(address(house).balance, h.settledAmount());
             uint256 owed = house.balances(artist, address(0)) + house.balances(broker, address(0))
-                + house.balances(address(house), address(0));
+                + house.balances(address(house), address(0)) + house.balances(house.BUYBACK(), address(0));
             assertEq(owed, h.settledAmount(), "proceeds split in the ledger");
         } else {
             assertEq(source.pieceContract(), address(0));

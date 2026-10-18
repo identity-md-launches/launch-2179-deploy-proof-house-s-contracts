@@ -43,17 +43,26 @@ contract MockVRFCoordinator {
     uint256 public nextId = 1;
     mapping(uint256 => address) public consumer;
     IVRFCoordinatorV2Plus.RandomWordsRequest public lastRequest;
+    // as VRF v2.5: set on request, deleted when answered (even if the callback fails)
+    mapping(uint256 => bytes32) public s_requestCommitments;
 
     function requestRandomWords(IVRFCoordinatorV2Plus.RandomWordsRequest calldata req) external returns (uint256 id) {
         id = nextId++;
         consumer[id] = msg.sender;
         lastRequest = req;
+        s_requestCommitments[id] = keccak256(abi.encode(id, msg.sender));
     }
 
     function fulfill(uint256 id, uint256 word) external {
+        delete s_requestCommitments[id];
         uint256[] memory words = new uint256[](1);
         words[0] = word;
         IVRFConsumer(consumer[id]).rawFulfillRandomWords(id, words);
+    }
+
+    /// @dev The coordinator answered but the consumer's callback failed (e.g. out of gas): the request is gone.
+    function answerWithFailedCallback(uint256 id) external {
+        delete s_requestCommitments[id];
     }
 }
 
@@ -84,5 +93,21 @@ contract Reenterer {
             (bool ok,) = target.call(data);
             reentryFailed = !ok;
         }
+    }
+}
+
+/// @dev EIP-2935's block hash history, for tests: etched at its address, it answers a 32-byte block number with the
+/// hash set for it, and reverts for any block it doesn't hold (as the real one does outside its 8,191 blocks).
+contract MockBlockHistory {
+    mapping(uint256 => bytes32) public hashes;
+
+    function set(uint256 n, bytes32 h) external {
+        hashes[n] = h;
+    }
+
+    fallback(bytes calldata data) external returns (bytes memory) {
+        bytes32 h = hashes[abi.decode(data, (uint256))];
+        require(h != bytes32(0), "not held");
+        return abi.encode(h);
     }
 }

@@ -4,6 +4,7 @@ pragma solidity 0.8.26;
 import {ArtStorage} from "../src/ArtStorage.sol";
 import {ArtHouse} from "../src/ArtHouse.sol";
 import {ArtifactsPiece} from "../src/ArtifactsPiece.sol";
+import {KeyProof} from "../src/KeyProof.sol";
 import {ArtifactsFactory} from "../src/ArtifactsFactory.sol";
 import {ArtifactsSource} from "../src/ArtifactsSource.sol";
 
@@ -18,6 +19,7 @@ contract Deploy {
         ArtStorage artStorage;
         ArtHouse artHouse;
         ArtifactsPiece artifactsPiece;
+        KeyProof keyProof;
         ArtifactsFactory artifactsFactory;
         ArtifactsSource artifactsSource;
     }
@@ -25,7 +27,8 @@ contract Deploy {
     function deploy(address owner, address imd) public returns (Deployed memory d) {
         d.artStorage = new ArtStorage(owner);
         d.artHouse = new ArtHouse(owner, address(d.artStorage), imd);
-        d.artifactsPiece = new ArtifactsPiece();
+        d.keyProof = new KeyProof();
+        d.artifactsPiece = new ArtifactsPiece(address(d.keyProof));
         d.artifactsFactory = new ArtifactsFactory(owner, address(d.artHouse), address(d.artifactsPiece));
         d.artifactsSource = new ArtifactsSource(owner, address(d.artHouse), address(d.artifactsPiece));
     }

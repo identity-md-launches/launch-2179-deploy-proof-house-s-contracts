@@ -6,6 +6,7 @@ import {ArtifactsSource} from "../src/ArtifactsSource.sol";
 import {ArtifactsPiece} from "../src/ArtifactsPiece.sol";
 import {TwoStepOwnable} from "../src/base/TwoStepOwnable.sol";
 import {Base64Decode} from "./utils/Base64Decode.sol";
+import {Seal} from "../src/libs/Seal.sol";
 
 contract ArtifactsSourceTest is Fixture {
     uint256 internal constant CHUNK = 24_000;
@@ -140,9 +141,10 @@ contract ArtifactsSourceTest is Fixture {
         assertEq(piece.name(), unicode"ARTIFACTS · THE SOURCE");
         assertTrue(piece.isSource());
         assertEq(source.pieceContract(), address(piece));
-        // proceeds went through the ledger (no broker on the winning bid => house takes the broker share)
-        assertEq(house.balances(artist, address(0)), 1.4 ether);
-        assertEq(house.balances(address(house), address(0)), 0.6 ether);
+        // proceeds went through the ledger (no broker on the winning bid => the broker share buys back and burns)
+        assertEq(house.balances(artist, address(0)), 1.5 ether);
+        assertEq(house.balances(address(house), address(0)), 0.1 ether);
+        assertEq(house.balances(house.BUYBACK(), address(0)), 0.4 ether);
         assertEq(address(house).balance, 2 ether);
         assertEq(address(source).balance, 1.05 ether); // bob's refund still pending
         vm.expectRevert(ArtifactsSource.AuctionNotOpen.selector);
@@ -183,10 +185,10 @@ contract ArtifactsSourceTest is Fixture {
     function test_revealServesTheRendererWithItsSeed() public {
         bytes memory page = _storeSource();
         ArtifactsPiece piece = _runAuction();
-        // sealed until revealed: the R9 frame
+        // sealed until revealed: the R9 frame, marked SEALED
         bytes memory sealedUri = bytes(piece.tokenURI(1));
         bytes memory json = Base64Decode.decode(Base64Decode.slice(sealedUri, 29, sealedUri.length));
-        bytes memory expectedSeal;
+        bytes memory frameOnly;
         {
             uint256 sAt = Base64Decode.indexOf(json, bytes("data:image/svg+xml;base64,"), 0) + 26;
             uint256 sEnd = Base64Decode.indexOf(json, bytes('"}'), sAt);
@@ -194,9 +196,9 @@ contract ArtifactsSourceTest is Fixture {
             bytes memory framed = bytes(vm.readFile("reference/framed/framed-MASTER.svg"));
             uint256 frameAt = Base64Decode.indexOf(framed, bytes('<g fill="#1a1a1a"'), 0);
             uint256 dotsAt = Base64Decode.indexOf(framed, bytes("<circle"), 0);
-            expectedSeal =
+            frameOnly =
                 bytes.concat(Base64Decode.slice(framed, 0, dotsAt), Base64Decode.slice(framed, frameAt, framed.length));
-            assertEq(sealSvg, expectedSeal, "THE SOURCE seal differs from R9 frame");
+            assertEq(sealSvg, Base64Decode.withMark(frameOnly, Seal.SEALED_MARK), "THE SOURCE seal differs from R9 frame");
         }
         // only the owner, only with the committed key, only once
         vm.prank(bob);
@@ -236,11 +238,14 @@ contract ArtifactsSourceTest is Fixture {
         uint256 end = Base64Decode.indexOf(meta, bytes('"}'), at);
         bytes memory shown = Base64Decode.decode(Base64Decode.slice(meta, at, end));
         assertEq(keccak256(shown), keccak256(bytes.concat(page, bytes(seedHex), bytes(piece.RENDER_SUFFIX()))), "page differs");
-        // the still image stays the seal; the seed is a public attribute; the name holds
+        // the still image is the same frame, now marked REVEALED (the art is the animation); the seed is a public
+        // attribute; the name holds
         assertTrue(Base64Decode.indexOf(meta, bytes.concat('"Seed","value":"', bytes(seedHex), '"'), 0) > 0);
         uint256 imgAt = Base64Decode.indexOf(meta, bytes("data:image/svg+xml;base64,"), 0) + 26;
         uint256 imgEnd = Base64Decode.indexOf(meta, bytes('","animation_url"'), imgAt);
-        assertEq(Base64Decode.decode(Base64Decode.slice(meta, imgAt, imgEnd)), expectedSeal);
+        bytes memory still = Base64Decode.decode(Base64Decode.slice(meta, imgAt, imgEnd));
+        assertEq(still, Base64Decode.withMark(frameOnly, Seal.REVEALED_MARK));
+        assertTrue(Base64Decode.indexOf(still, bytes(">REVEALED<"), 0) > 0);
         assertEq(Base64Decode.indexOf(meta, bytes(unicode'"name":"ARTIFACTS · THE SOURCE"'), 0), 1);
     }
 
@@ -293,16 +298,52 @@ contract ArtifactsSourceTest is Fixture {
         assertEq(piece.wrappedKey(), bytes("wrapped-for-bob"));
     }
 
+    /// @dev The auction only opens once the house will accept its sale, so a winning bid can always settle.
+    function test_auctionNeedsTheHouseToAcceptTheSale() public {
+        _storeSource();
+        vm.prank(curator);
+        house.setSaleModule(address(source), false);
+        vm.prank(curator);
+        vm.expectRevert(ArtifactsSource.NotRegistered.selector);
+        source.setAuction(1 ether, uint64(vm.getBlockTimestamp() + 1 days));
+        vm.prank(curator);
+        house.setSaleModule(address(source), true);
+        vm.prank(curator);
+        source.setAuction(1 ether, uint64(vm.getBlockTimestamp() + 1 days));
+        assertTrue(source.auctionOpen());
+    }
+
+    /// @dev A listing made while sealed comes down when the owner reveals; nobody can buy it at the sealed price.
+    function test_revealTakesDownAListingWithNoBuyer() public {
+        _storeSource();
+        ArtifactsPiece piece = _runAuction();
+        vm.prank(alice);
+        piece.list(2 ether);
+        vm.expectEmit(address(piece));
+        emit ArtifactsPiece.Delisted();
+        vm.prank(alice);
+        piece.reveal(SOURCE_KEY);
+        (, address seller,,,,,,,,) = piece.escrow();
+        assertEq(seller, address(0));
+        vm.prank(bob);
+        vm.expectRevert(ArtifactsPiece.NotListed.selector);
+        piece.buy{value: 2 ether}(_vk("bob vk"), address(0));
+        // the owner can list it again, revealed
+        vm.prank(alice);
+        piece.list(3 ether);
+    }
+
     function test_noRevealWhileABuyerIsInEscrow() public {
         _storeSource();
         ArtifactsPiece piece = _runAuction();
         vm.prank(alice);
         piece.list(2 ether);
         vm.prank(bob);
-        piece.buy{value: 2 ether}(keccak256("bob vk"), address(0));
+        piece.buy{value: 2 ether}(_vk("bob vk"), address(0));
         vm.prank(alice);
         vm.expectRevert(ArtifactsPiece.EscrowActive.selector);
         piece.reveal(SOURCE_KEY);
+        vm.warp(vm.getBlockTimestamp() + 24 hours); // the seller's window
         vm.prank(bob);
         piece.cancel();
         vm.prank(alice);

@@ -14,9 +14,15 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
     // ---------- constants ----------
     uint16 public constant BPS = 10_000;
     uint16 public constant ROYALTY_BPS = 750;
+    // A sale's default split: 75% to the artist, 15% to the agent who brought the buyer, 5% to the house (team and
+    // operations) and 5% to buy back and burn IMD. On any collection, an agent's share nobody earned is burned too.
     uint16 public constant DEFAULT_BROKER_BPS = 1500;
-    uint16 public constant DEFAULT_HOUSE_BPS = 1500;
-    uint16 public constant DEFAULT_ARTIST_BPS = 7000;
+    uint16 public constant DEFAULT_HOUSE_BPS = 500;
+    uint16 public constant DEFAULT_ARTIST_BPS = 7500;
+    uint16 public constant DEFAULT_BURN_BPS = 500;
+    /// @notice The balance key of ETH (or tokens) set aside to buy back and burn IMD. Only the buyback burner,
+    /// set once, can receive it.
+    address public constant BUYBACK = address(uint160(uint256(keccak256("proofhouse.buyback"))));
     uint256 public constant MAX_PIECE_BYTES = 100_000;
     address public constant ETH = address(0);
 
@@ -44,6 +50,7 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
         uint256 pieceCount;
         uint256 priceETH;
         uint256 priceIMD;
+        uint16 burnBps; // last, so readers of the fields before it are unchanged
     }
 
     struct Piece {
@@ -80,6 +87,8 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
     address[] public collectionList;
     /// @notice Proof House Broker Pass: holding one makes a wallet a broker. Set once by the owner.
     address public brokerPass;
+    /// @notice The contract that turns the buyback balance into IMD and burns it. Set once by the owner.
+    address public buybackBurner;
 
     // ---------- events ----------
     event ArtistApproved(address indexed artist, string name, address payout);
@@ -93,7 +102,9 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
     );
     event CollectionCreated(address indexed collection, address indexed artist, string name, string symbol);
     event ModuleCollectionRegistered(address indexed collection, address indexed artist);
-    event SplitSet(address indexed collection, uint16 brokerBps, uint16 houseBps, uint16 artistBps);
+    event SplitSet(address indexed collection, uint16 brokerBps, uint16 houseBps, uint16 artistBps, uint16 burnBps);
+    event BuybackBurnerSet(address indexed burner);
+    event BuybackReleased(address indexed currency, address indexed burner, uint256 amount);
     event PricesSet(address indexed collection, uint256 priceETH, uint256 priceIMD);
     event SaleOpenSet(address indexed collection, bool open);
     event PieceRegistered(address indexed collection, uint256 indexed pieceId, bytes32 contentHash, string title);
@@ -109,7 +120,8 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
         uint256 amount,
         uint256 brokerShare,
         uint256 houseShare,
-        uint256 artistShare
+        uint256 artistShare,
+        uint256 burnShare
     );
     event Withdrawn(address indexed party, address indexed currency, address to, uint256 amount);
     event Submitted(uint256 indexed id, address indexed submitter, bytes32 contentHash, string previewURI);
@@ -141,6 +153,8 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
     error BrokerPassAlreadySet();
     error NotPiece();
     error NotEligibleBroker();
+    error BuybackBurnerAlreadySet();
+    error NoBuybackBurner();
 
     constructor(address owner_, address storage_, address imd_) TwoStepOwnable(owner_) {
         if (storage_ == address(0) || imd_ == address(0)) revert ZeroAddress();
@@ -228,17 +242,22 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
         c.brokerBps = DEFAULT_BROKER_BPS;
         c.houseBps = DEFAULT_HOUSE_BPS;
         c.artistBps = DEFAULT_ARTIST_BPS;
+        c.burnBps = DEFAULT_BURN_BPS;
         collectionList.push(collection);
     }
 
-    function setSplit(address collection, uint16 brokerBps, uint16 houseBps, uint16 artistBps) external onlyOwner {
+    function setSplit(address collection, uint16 brokerBps, uint16 houseBps, uint16 artistBps, uint16 burnBps)
+        external
+        onlyOwner
+    {
         if (!collections[collection].exists) revert UnknownCollection();
-        if (uint256(brokerBps) + houseBps + artistBps != BPS) revert BadSplit();
+        if (uint256(brokerBps) + houseBps + artistBps + burnBps != BPS) revert BadSplit();
         Collection storage c = collections[collection];
         c.brokerBps = brokerBps;
         c.houseBps = houseBps;
         c.artistBps = artistBps;
-        emit SplitSet(collection, brokerBps, houseBps, artistBps);
+        c.burnBps = burnBps;
+        emit SplitSet(collection, brokerBps, houseBps, artistBps, burnBps);
     }
 
     function setPrices(address collection, uint256 priceETH, uint256 priceIMD) external onlyOwner {
@@ -412,6 +431,13 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
         emit Resale(module, msg.sender, brokerShare > 0 ? broker : address(0), royalty, brokerShare);
     }
 
+    /// @notice Whether `module` can record a sale of its own collection now: an approved sale module registered as a
+    /// module collection. A module checks this before taking bids it will settle later.
+    function canRecordSale(address module) external view returns (bool) {
+        Collection storage c = collections[module];
+        return saleModules[module] && c.exists && c.isModule;
+    }
+
     /// @notice Approved sale modules record an ETH sale of a module collection; the ETH comes with the call.
     function recordSale(address collection, address buyer, address broker) external payable {
         if (!saleModules[msg.sender]) revert NotSaleModule();
@@ -424,14 +450,17 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
     function _credit(address collection, address buyer, address broker, address currency, uint256 amount) private {
         Collection storage c = collections[collection];
         uint256 artistShare = (amount * c.artistBps) / BPS;
-        uint256 brokerShare;
-        if (broker != buyer && isEligibleBroker(broker)) {
-            brokerShare = (amount * c.brokerBps) / BPS;
+        uint256 burnShare = (amount * c.burnBps) / BPS;
+        uint256 brokerShare = (amount * c.brokerBps) / BPS;
+        if (isEligibleBroker(broker)) {
             balances[broker][currency] += brokerShare;
         } else {
+            // No agent brought this sale: their share buys back and burns IMD, on every collection.
+            burnShare += brokerShare;
+            brokerShare = 0;
             broker = address(0);
         }
-        uint256 houseShare = amount - artistShare - brokerShare; // rounding and any unearned broker share
+        uint256 houseShare = amount - artistShare - burnShare - brokerShare; // its share and the rounding
         if (c.houseBps == 0) {
             // a collection with no house share (THE SOURCE): what the house would have kept goes to the artist
             artistShare += houseShare;
@@ -439,7 +468,8 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
         }
         balances[c.artist][currency] += artistShare;
         balances[address(this)][currency] += houseShare;
-        emit Sale(collection, buyer, broker, currency, amount, brokerShare, houseShare, artistShare);
+        balances[BUYBACK][currency] += burnShare;
+        emit Sale(collection, buyer, broker, currency, amount, brokerShare, houseShare, artistShare, burnShare);
     }
 
     // ---------- withdrawals ----------
@@ -453,6 +483,26 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
         if (to == address(0)) to = msg.sender;
         _pay(currency, to, amount);
         emit Withdrawn(msg.sender, currency, to, amount);
+    }
+
+    /// @notice The contract that buys back and burns IMD with the buyback balance. Set once, so what is set aside to
+    /// burn can never go anywhere else.
+    function setBuybackBurner(address burner) external onlyOwner {
+        if (buybackBurner != address(0)) revert BuybackBurnerAlreadySet();
+        if (burner == address(0)) revert ZeroAddress();
+        buybackBurner = burner;
+        emit BuybackBurnerSet(burner);
+    }
+
+    /// @notice Anyone may send the buyback balance (in one currency) to the buyback burner.
+    function releaseBuyback(address currency) external nonReentrant {
+        address burner = buybackBurner;
+        if (burner == address(0)) revert NoBuybackBurner();
+        uint256 amount = balances[BUYBACK][currency];
+        if (amount == 0) revert NothingToWithdraw();
+        balances[BUYBACK][currency] = 0;
+        _pay(currency, burner, amount);
+        emit BuybackReleased(currency, burner, amount);
     }
 
     /// @notice The house balance goes to the current owner.

@@ -5,15 +5,19 @@ pragma solidity 0.8.26;
 /// test networks only.
 contract MockSeats {
     mapping(uint256 => address) public ownerOfSeat;
+    mapping(address => uint256) public balanceOf;
 
     function mint(address to, uint256 seatId) external {
         require(ownerOfSeat[seatId] == address(0), "minted");
         ownerOfSeat[seatId] = to;
+        balanceOf[to] += 1;
     }
 
     function transferFrom(address from, address to, uint256 seatId) external {
         require(ownerOfSeat[seatId] == from && msg.sender == from, "not owner");
         ownerOfSeat[seatId] = to;
+        balanceOf[from] -= 1;
+        balanceOf[to] += 1;
     }
 
     function ownerOf(uint256 seatId) external view returns (address o) {

@@ -1,48 +1,63 @@
 {
-  "kind": "evm_contracts",
-  "contracts": [
-    {
-      "contract": "ArtStorage",
-      "constructorArgs": [
-        "$owner"
-      ]
-    },
-    {
-      "contract": "ArtHouse",
-      "constructorArgs": [
-        "$owner",
-        "$contract:ArtStorage",
-        "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7"
-      ]
-    },
-    {
-      "contract": "ArtifactsPiece",
-      "constructorArgs": []
-    },
-    {
-      "contract": "ArtifactsFactory",
-      "constructorArgs": [
-        "$owner",
-        "$contract:ArtHouse",
-        "$contract:ArtifactsPiece"
-      ]
-    },
-    {
-      "contract": "ArtifactsSource",
-      "constructorArgs": [
-        "$owner",
-        "$contract:ArtHouse",
-        "$contract:ArtifactsPiece"
-      ]
-    },
-    {
-      "contract": "BrokerPass",
-      "constructorArgs": [
-        "0x0000ec93127baa929e58e97dd0095a2bfb38ec1d",
-        "$contract:ArtifactsFactory",
-        "$contract:ArtifactsSource"
-      ]
-    }
-  ],
-  "notes": "Proof House on Ethereum mainnet, first drop ARTIFACTS (THE SOURCE by auction first, then 255 editions). No fungible token or pool. IMD (0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7) is the existing ERC-20 buyers may pay with for plain SVG collections. BrokerPass: 100 free passes, claimed with an ARTIFACTS piece or an identity.md seat (0x0000ec93127baa929e58e97dd0095a2bfb38ec1d); holders are Proof House brokers. After deployment the owner calls ArtHouse.setBrokerPass, approves the artist, registers ArtifactsFactory and ArtifactsSource as sale modules and module collections, sets THE SOURCE's split to 15/0/85, configures VRF, and calls ArtStorage.setHouse."
+ "kind": "evm_contracts",
+ "contracts": [
+  {
+   "contract": "ArtStorage",
+   "constructorArgs": [
+    "$owner"
+   ]
+  },
+  {
+   "contract": "ArtHouse",
+   "constructorArgs": [
+    "$owner",
+    "$contract:ArtStorage",
+    "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7"
+   ]
+  },
+  {
+   "contract": "KeyProof",
+   "constructorArgs": []
+  },
+  {
+   "contract": "ArtifactsPiece",
+   "constructorArgs": [
+    "$contract:KeyProof"
+   ]
+  },
+  {
+   "contract": "ArtifactsFactory",
+   "constructorArgs": [
+    "$owner",
+    "$contract:ArtHouse",
+    "$contract:ArtifactsPiece"
+   ]
+  },
+  {
+   "contract": "ArtifactsSource",
+   "constructorArgs": [
+    "$owner",
+    "$contract:ArtHouse",
+    "$contract:ArtifactsPiece"
+   ]
+  },
+  {
+   "contract": "BrokerPass",
+   "constructorArgs": [
+    "0x0000ec93127baa929e58e97dd0095a2bfb38ec1d",
+    "$contract:ArtifactsFactory",
+    "$contract:ArtifactsSource"
+   ]
+  },
+  {
+   "contract": "SubmissionReviews",
+   "constructorArgs": [
+    "$contract:ArtHouse",
+    "0x0000ec93127baa929e58e97dd0095a2bfb38ec1d",
+    "$contract:ArtifactsFactory",
+    "$contract:ArtifactsSource"
+   ]
+  }
+ ],
+ "notes": "Proof House on Ethereum mainnet, first drop ARTIFACTS (THE SOURCE by auction first, then 255 editions). No fungible token or pool. IMD (0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7) is the existing ERC-20 buyers may pay with for plain SVG collections. BrokerPass: 100 free passes, claimed with an ARTIFACTS piece or an identity.md seat (0x0000ec93127baa929e58e97dd0095a2bfb38ec1d); holders are Proof House brokers. BrokerPass claims are one per wallet, ever. BrokerPass claims open at a start time the factory's owner sets once (setClaimsOpenAt). SubmissionReviews: advisory reviews of artist submissions, one voice per identity.md seat and per claimed ARTIFACTS piece, frozen once the curator decides; no owner. ImdBuybackBurner is not in this launch (an evm_contracts launch deploys at most 8 contracts): the curator deploys it right after, from contracts/launch.burner.json, and connects it with ArtHouse.setBuybackBurner. After deployment the owner calls ArtHouse.setBrokerPass, approves the artist, registers ArtifactsFactory and ArtifactsSource as sale modules and module collections, sets THE SOURCE's split to 15/0/85, configures VRF, calls ArtStorage.setHouse, calls ArtHouse.setBuybackBurner(ImdBuybackBurner), and at launch BrokerPass.setClaimsOpenAt."
 }

@@ -14,6 +14,7 @@ import {SSTORE2} from "../src/libs/SSTORE2.sol";
 import {Clones} from "../src/libs/Clones.sol";
 import {Traits} from "../src/interfaces/Interfaces.sol";
 import {Base64Decode} from "./utils/Base64Decode.sol";
+import {Seal} from "../src/libs/Seal.sol";
 import {
     FeeOnTransferToken,
     FalseReturningToken,
@@ -128,7 +129,7 @@ contract ArtHouseEdgeTest is Fixture {
         house.setPayout(carol);
         vm.prank(artist);
         house.withdraw(address(0));
-        assertEq(carol.balance, 1000 ether + 0.7 ether, "earnings follow the payout address");
+        assertEq(carol.balance, 1000 ether + 0.75 ether, "earnings follow the payout address");
         (address to,) = col.royaltyInfo(0, 1 ether);
         assertEq(to, carol);
     }
@@ -143,12 +144,12 @@ contract ArtHouseEdgeTest is Fixture {
         vm.prank(artist);
         vm.expectRevert(ArtHouse.TransferFailed.selector);
         house.withdraw(address(0));
-        assertEq(house.balances(artist, address(0)), 0.7 ether, "balance intact after a failed payout");
+        assertEq(house.balances(artist, address(0)), 0.75 ether, "balance intact after a failed payout");
         vm.prank(artist);
         house.setPayout(artist);
         vm.prank(artist);
         house.withdraw(address(0));
-        assertEq(artist.balance, 0.7 ether);
+        assertEq(artist.balance, 0.75 ether);
     }
 
     function test_revokedBrokerKeepsEarnedBalance_butEarnsNoMore() public {
@@ -160,7 +161,8 @@ contract ArtHouseEdgeTest is Fixture {
         vm.prank(bob);
         house.mint{value: 1 ether}(address(col), 1, broker);
         assertEq(house.balances(broker, address(0)), 0.15 ether, "only the first sale paid the broker");
-        assertEq(house.balances(address(house), address(0)), 0.15 ether + 0.3 ether, "unearned share to house");
+        assertEq(house.balances(address(house), address(0)), 0.05 ether + 0.05 ether, "the house's 5% of each");
+        assertEq(house.balances(house.BUYBACK(), address(0)), 0.05 ether + 0.2 ether, "unearned share to the burn");
         vm.prank(broker);
         house.withdraw(address(0));
         assertEq(broker.balance, 0.15 ether);
@@ -177,10 +179,10 @@ contract ArtHouseEdgeTest is Fixture {
     function test_splitExtremes() public {
         vm.startPrank(curator);
         vm.expectRevert(ArtHouse.UnknownCollection.selector);
-        house.setSplit(makeAddr("nope"), 0, 0, 10_000);
+        house.setSplit(makeAddr("nope"), 0, 0, 10_000, 0);
         vm.expectRevert(ArtHouse.BadSplit.selector);
-        house.setSplit(address(col), 10_000, 10_000, 10_000); // sum overflows uint16 but not the check
-        house.setSplit(address(col), 10_000, 0, 0); // everything to the broker
+        house.setSplit(address(col), 10_000, 10_000, 10_000, 10_000); // sum overflows uint16 but not the check
+        house.setSplit(address(col), 10_000, 0, 0, 0); // everything to the broker
         vm.stopPrank();
         _open(1 ether, 0);
         vm.prank(alice);
@@ -188,26 +190,78 @@ contract ArtHouseEdgeTest is Fixture {
         assertEq(house.balances(broker, address(0)), 1 ether);
         assertEq(house.balances(artist, address(0)), 0);
         assertEq(house.balances(address(house), address(0)), 0);
-        // the same split without an eligible broker: with no house share, the unearned share goes to the artist
+        // the same split without an eligible broker: the unearned share buys back and burns IMD
         vm.prank(bob);
         house.mint{value: 1 ether}(address(col), 1, bob);
         assertEq(house.balances(address(house), address(0)), 0);
-        assertEq(house.balances(artist, address(0)), 1 ether);
+        assertEq(house.balances(artist, address(0)), 0);
+        assertEq(house.balances(house.BUYBACK(), address(0)), 1 ether);
+    }
+
+    // ---------- the default split and the buyback ----------
+
+    function test_defaultSplit_agentHouseBurn() public {
+        (,,,,, uint16 bb, uint16 hb, uint16 ab,,,, uint16 ub) = house.collections(address(factory));
+        assertEq(bb, 1500, "agent 15");
+        assertEq(hb, 500, "house 5");
+        assertEq(ab, 7500, "artist 75");
+        assertEq(ub, 500, "burn 5");
+        vm.deal(address(factory), 2 ether);
+        vm.prank(address(factory));
+        house.recordSale{value: 1 ether}(address(factory), alice, broker);
+        assertEq(house.balances(artist, address(0)), 0.75 ether, "artist 75");
+        assertEq(house.balances(broker, address(0)), 0.15 ether, "agent 15");
+        assertEq(house.balances(address(house), address(0)), 0.05 ether, "house 5");
+        assertEq(house.balances(house.BUYBACK(), address(0)), 0.05 ether, "burn 5");
+        // no agent on the sale: their 15 is burned too
+        vm.prank(address(factory));
+        house.recordSale{value: 1 ether}(address(factory), alice, address(0));
+        assertEq(house.balances(artist, address(0)), 1.5 ether);
+        assertEq(house.balances(broker, address(0)), 0.15 ether);
+        assertEq(house.balances(address(house), address(0)), 0.1 ether);
+        assertEq(house.balances(house.BUYBACK(), address(0)), 0.25 ether, "5 + 20");
+    }
+
+    function test_buybackOnlyToTheBurnerSetOnce() public {
+        vm.deal(address(factory), 1 ether);
+        vm.prank(address(factory));
+        house.recordSale{value: 1 ether}(address(factory), alice, address(0));
+        vm.expectRevert(ArtHouse.NoBuybackBurner.selector);
+        house.releaseBuyback(address(0));
+        address burner = makeAddr("burner");
+        vm.prank(alice);
+        vm.expectRevert();
+        house.setBuybackBurner(alice);
+        vm.startPrank(curator);
+        vm.expectRevert(TwoStepOwnable.ZeroAddress.selector);
+        house.setBuybackBurner(address(0));
+        house.setBuybackBurner(burner);
+        vm.expectRevert(ArtHouse.BuybackBurnerAlreadySet.selector);
+        house.setBuybackBurner(curator);
+        vm.stopPrank();
+        vm.prank(bob); // anyone may send it on, and it can only go to the burner
+        house.releaseBuyback(address(0));
+        assertEq(burner.balance, 0.2 ether);
+        assertEq(house.balances(house.BUYBACK(), address(0)), 0);
+        vm.expectRevert(ArtHouse.NothingToWithdraw.selector);
+        house.releaseBuyback(address(0));
     }
 
     /// forge-config: default.fuzz.runs = 512
     function testFuzz_splitConservesAndHouseTakesRounding(
         uint16 brokerBps,
         uint16 houseBps,
+        uint16 burnBps,
         uint96 amount,
         uint8 brokerKind
     ) public {
         brokerBps = uint16(bound(brokerBps, 0, 10_000));
         houseBps = uint16(bound(houseBps, 0, 10_000 - brokerBps));
-        uint16 artistBps = 10_000 - brokerBps - houseBps;
+        burnBps = uint16(bound(burnBps, 0, 10_000 - brokerBps - houseBps));
+        uint16 artistBps = 10_000 - brokerBps - houseBps - burnBps;
         amount = uint96(bound(amount, 1, type(uint96).max));
         vm.prank(curator);
-        house.setSplit(address(factory), brokerBps, houseBps, artistBps);
+        house.setSplit(address(factory), brokerBps, houseBps, artistBps, burnBps);
         address b = brokerKind % 4 == 0 ? address(0) : brokerKind % 4 == 1 ? alice : brokerKind % 4 == 2 ? bob : broker;
         vm.deal(address(factory), amount);
         vm.prank(address(factory));
@@ -215,16 +269,21 @@ contract ArtHouseEdgeTest is Fixture {
         uint256 a = house.balances(artist, address(0));
         uint256 br = house.balances(broker, address(0));
         uint256 h = house.balances(address(house), address(0));
-        assertEq(a + br + h, amount, "conservation");
+        uint256 bu = house.balances(house.BUYBACK(), address(0));
+        assertEq(a + br + h + bu, amount, "conservation");
+        uint256 unearned;
         if (b == broker) {
             assertEq(br, (uint256(amount) * brokerBps) / 10_000, "broker share floors");
         } else {
-            assertEq(br, 0, "no commission for the buyer or an unapproved broker");
+            assertEq(br, 0, "no commission for an unapproved broker");
+            unearned = (uint256(amount) * brokerBps) / 10_000;
         }
+        // the burn share, plus any unearned broker share
+        assertEq(bu, (uint256(amount) * burnBps) / 10_000 + unearned, "burn share");
         if (houseBps == 0) {
-            // no house share: the artist takes the rounding and any unearned broker share
+            // no house share: the artist takes the rounding
             assertEq(h, 0, "no house share");
-            assertEq(a, amount - br, "artist takes the rest");
+            assertEq(a, amount - br - bu, "artist takes the rest");
         } else {
             assertEq(a, (uint256(amount) * artistBps) / 10_000, "artist share floors");
             assertGe(h, (uint256(amount) * houseBps) / 10_000, "house takes the rounding");
@@ -255,8 +314,10 @@ contract ArtHouseEdgeTest is Fixture {
         uint256 houseEth = house.balances(address(house), address(0));
         uint256 artistImd = house.balances(artist, address(imd));
         uint256 houseImd = house.balances(address(house), address(imd));
-        assertEq(artistEth + brokerEth + houseEth, uint256(p1) + p2);
-        assertEq(artistImd + houseImd, imdPrice);
+        uint256 burnEth = house.balances(house.BUYBACK(), address(0));
+        uint256 burnImd = house.balances(house.BUYBACK(), address(imd));
+        assertEq(artistEth + brokerEth + houseEth + burnEth, uint256(p1) + p2);
+        assertEq(artistImd + houseImd + burnImd, imdPrice);
         assertEq(house.balances(broker, address(imd)), 0);
 
         // a floored share of zero (tiny prices) has nothing to withdraw; everything else drains exactly
@@ -270,8 +331,8 @@ contract ArtHouseEdgeTest is Fixture {
         assertEq(curator.balance, houseEth);
         assertEq(imd.balanceOf(artist), artistImd);
         assertEq(imd.balanceOf(curator), houseImd);
-        assertEq(address(house).balance, 0, "nothing left once everyone withdrew");
-        assertEq(imd.balanceOf(address(house)), 0);
+        assertEq(address(house).balance, burnEth, "only the buyback balance is left, for the burner");
+        assertEq(imd.balanceOf(address(house)), burnImd);
         // and a second withdrawal finds nothing
         vm.prank(artist);
         vm.expectRevert(ArtHouse.NothingToWithdraw.selector);
@@ -652,7 +713,7 @@ contract ArtifactsEdgeTest is Fixture {
         assertEq(f.sold(), 1);
     }
 
-    function test_buyerAsBrokerEarnsNothing_andOneWeiPriceWorks() public {
+    function test_unapprovedBuyerAsBrokerEarnsNothing_andOneWeiPriceWorks() public {
         _publishAll();
         _openSale(1);
         vm.prank(alice);
@@ -811,9 +872,11 @@ contract ArtifactsEdgeTest is Fixture {
         ArtifactsPiece piece = ArtifactsPiece(factory.claim(e));
         assertEq(piece.ownerOf(1), alice);
         assertEq(piece.wrappedKey(), "second");
+        // after the claim a key goes into the piece, only into an empty slot: this one holds its key
         vm.prank(curator);
-        vm.expectRevert(ArtifactsFactory.AlreadyClaimed.selector);
+        vm.expectRevert(ArtifactsPiece.KeyAlreadyPosted.selector);
         factory.postWrappedKey(e, "third");
+        assertEq(piece.wrappedKey(), "second");
         vm.prank(curator);
         vm.expectRevert(ArtifactsFactory.AlreadyClaimed.selector);
         factory.claim(e);
@@ -863,7 +926,8 @@ contract ArtifactsEdgeTest is Fixture {
         bytes memory svg =
             Base64Decode.decode(Base64Decode.slice(json, at, Base64Decode.indexOf(json, bytes('"}'), at)));
 
-        // template: framed-003 with dots removed, DRIFT / PRISM  ·  3C  ·  HORIZONTAL / SEED 003 swapped
+        // template: framed-003 with dots removed, DRIFT / PRISM  ·  3C  ·  HORIZONTAL / SEED 003 swapped for these
+        // traits and the edition's number (No. nnn), then marked SEALED
         bytes memory framed = bytes(vm.readFile("reference/framed/framed-003.svg"));
         uint256 frameAt = Base64Decode.indexOf(framed, bytes('<g fill="#1a1a1a"'), 0);
         uint256 dotsAt = Base64Decode.indexOf(framed, bytes("<circle"), 0);
@@ -871,7 +935,7 @@ contract ArtifactsEdgeTest is Fixture {
         uint256 a1 = Base64Decode.indexOf(frame, bytes(">DRIFT<"), 0) + 1;
         uint256 a2 = Base64Decode.indexOf(frame, bytes(unicode">PRISM  ·  3C  ·  HORIZONTAL<"), 0) + 1;
         uint256 a3 = Base64Decode.indexOf(frame, bytes(">SEED 003<"), 0) + 1;
-        bytes memory expected = bytes.concat(
+        bytes memory unmarked = bytes.concat(
             Base64Decode.slice(framed, 0, dotsAt),
             Base64Decode.slice(frame, 0, a1),
             bytes(tr.title),
@@ -882,12 +946,12 @@ contract ArtifactsEdgeTest is Fixture {
             unicode"C  ·  ",
             bytes(tr.direction),
             Base64Decode.slice(frame, a2 + bytes(unicode"PRISM  ·  3C  ·  HORIZONTAL").length, a3),
-            bytes("SEED "),
+            bytes("No. "),
             bytes(e < 10 ? "00" : e < 100 ? "0" : ""),
             bytes(vm.toString(e)),
             Base64Decode.slice(frame, a3 + 8, frame.length)
         );
-        assertEq(svg, expected, "seal is not the R8 frame for these traits");
+        assertEq(svg, Base64Decode.withMark(unmarked, Seal.SEALED_MARK), "seal is not the R8 frame for these traits");
         // attributes carry the same public traits (indexOf reverts when absent)
         Base64Decode.indexOf(json, bytes(string.concat('{"trait_type":"Title","value":"', tr.title, '"}')), 0);
         Base64Decode.indexOf(
@@ -937,26 +1001,21 @@ contract PieceEdgeTest is Fixture {
         piece.delist();
         vm.prank(alice);
         vm.expectRevert(ArtifactsPiece.NotEscrowBuyer.selector);
-        piece.buy{value: 1 ether}(keccak256("self"), address(0)); // seller cannot buy from themself
+        piece.buy{value: 1 ether}(_vk("self"), address(0)); // seller cannot buy from themself
         vm.prank(bob);
         vm.expectRevert(ArtifactsPiece.NoViewingKey.selector);
         piece.buy{value: 1 ether}(bytes32(0), address(0));
-        vm.prank(alice);
-        vm.expectRevert(ArtifactsPiece.NoEscrowBuyer.selector);
-        piece.postEscrowKey("k");
+        _postKeyReverts(piece, alice, (1 ether) / 10, ArtifactsPiece.NoEscrowBuyer.selector);
         vm.prank(alice);
         vm.expectRevert(ArtifactsPiece.NoEscrowBuyer.selector);
         piece.release();
         vm.prank(bob);
-        piece.buy{value: 1 ether}(keccak256("bob"), address(0));
+        piece.buy{value: 1 ether}(_vk("bob"), address(0));
         vm.prank(carol);
         vm.expectRevert(ArtifactsPiece.EscrowActive.selector);
-        piece.buy{value: 1 ether}(keccak256("carol"), address(0));
-        vm.prank(alice);
-        piece.postEscrowKey("k");
-        vm.prank(alice);
-        vm.expectRevert(ArtifactsPiece.KeyAlreadyPosted.selector);
-        piece.postEscrowKey("k2");
+        piece.buy{value: 1 ether}(_vk("carol"), address(0));
+        _postKey(piece, alice, (1 ether) / 10);
+        _postKeyReverts(piece, alice, (1 ether) / 10, ArtifactsPiece.KeyAlreadyPosted.selector);
         // an approved operator cannot move the token out of escrow either
         vm.prank(alice);
         piece.approve(carol, 1);
@@ -972,9 +1031,8 @@ contract PieceEdgeTest is Fixture {
         vm.prank(alice);
         piece.list(1 ether);
         vm.prank(bob);
-        piece.buy{value: 1 ether}(keccak256("bob"), address(0));
-        vm.prank(alice);
-        piece.postEscrowKey("k");
+        piece.buy{value: 1 ether}(_vk("bob"), address(0));
+        _postKey(piece, alice, (1 ether) / 10);
         uint256 paidAt = vm.getBlockTimestamp();
         vm.warp(paidAt + 72 hours);
         vm.prank(carol);
@@ -991,7 +1049,7 @@ contract PieceEdgeTest is Fixture {
         piece.delist();
         // the escrowed key is delivered and stands: the paid seller keeps no re-key right, so the key bob paid
         // for can never be overwritten (not even with an empty one)
-        assertEq(piece.wrappedKey(), "k");
+        assertEq(piece.wrappedKey(), _wrappedOf("key"));
         assertEq(piece.previousOwner(), address(0));
         vm.prank(alice);
         vm.expectRevert(ArtifactsPiece.NotPreviousOwner.selector);
@@ -999,25 +1057,25 @@ contract PieceEdgeTest is Fixture {
         vm.prank(alice);
         vm.expectRevert(ArtifactsPiece.NotPreviousOwner.selector);
         piece.rewrapFor("");
-        assertEq(piece.wrappedKey(), "k");
+        assertEq(piece.wrappedKey(), _wrappedOf("key"));
     }
 
     function test_cancelThenSecondBuyerAndRoyaltyToChangedPayout() public {
         vm.prank(alice);
         piece.list(2 ether);
         vm.prank(bob);
-        piece.buy{value: 2 ether}(keccak256("bob"), address(0));
+        piece.buy{value: 2 ether}(_vk("bob"), address(0));
+        vm.warp(vm.getBlockTimestamp() + 24 hours); // the seller's window
         vm.prank(bob);
         piece.cancel();
         vm.prank(bob);
         vm.expectRevert(ArtifactsPiece.NotEscrowBuyer.selector);
         piece.cancel(); // twice
         vm.prank(carol);
-        piece.buy{value: 2 ether}(keccak256("carol"), address(0));
+        piece.buy{value: 2 ether}(_vk("carol"), address(0));
         vm.prank(artist);
         house.setPayout(makeAddr("payout"));
-        vm.prank(alice);
-        piece.postEscrowKey("k");
+        _postKey(piece, alice, (2 ether) / 10);
         uint256 artistBefore = house.balances(artist, address(0));
         vm.prank(carol);
         piece.release();
@@ -1027,9 +1085,9 @@ contract PieceEdgeTest is Fixture {
         vm.prank(artist);
         house.withdraw(address(0));
         assertEq(makeAddr("payout").balance - payoutBefore, artistBefore + 0.15 ether, "royalty follows the artist's payout");
-        assertEq(piece.pendingWithdrawals(alice), 1.85 ether);
+        assertEq(piece.pendingWithdrawals(alice), 1.85 ether + 0.2 ether, "proceeds and the deposit back");
         assertEq(piece.pendingWithdrawals(bob), 2 ether);
-        assertEq(address(piece).balance, 3.85 ether);
+        assertEq(address(piece).balance, 4.05 ether);
         vm.prank(bob);
         piece.withdraw();
         vm.prank(bob);
@@ -1047,7 +1105,7 @@ contract PieceEdgeTest is Fixture {
         piece.safeTransferFrom(alice, address(re), 1, "");
         assertEq(piece.ownerOf(1), address(re));
         assertTrue(re.listedDuringHook(), "the new owner may act in its receiver hook");
-        (, address seller,,,,,) = piece.escrow();
+        (, address seller,,,,,,,,) = piece.escrow();
         assertEq(seller, address(re));
         assertEq(piece.previousOwner(), alice);
         assertEq(piece.wrappedKey(), "");
@@ -1081,7 +1139,7 @@ contract PieceEdgeTest is Fixture {
     function test_revealNeedsTheSourceLocked_andEmptyRendererURI() public {
         StubController ctl = new StubController();
         ArtifactsPiece src = ArtifactsPiece(Clones.clone(address(pieceImpl)));
-        src.initialize(address(ctl), address(house), 256, alice, _traits(256), address(0), SOURCE_COMMITMENT, "", true);
+        src.initialize(address(ctl), address(house), 256, alice, _traits(256), address(0), SOURCE_COMMITMENT, "", true, bytes32(0));
         assertEq(src.name(), unicode"ARTIFACTS · THE SOURCE");
         vm.prank(alice);
         vm.expectRevert(ArtifactsPiece.NotRevealable.selector);
@@ -1250,8 +1308,9 @@ contract SourceEdgeTest is Fixture {
         vm.warp(vm.getBlockTimestamp() + 1 hours);
         ArtifactsPiece piece = ArtifactsPiece(source.settle());
         assertEq(house.balances(broker, address(0)), 0.3 ether, "broker on the winning bid is paid");
-        assertEq(house.balances(artist, address(0)), 1.4 ether);
-        assertEq(house.balances(address(house), address(0)), 0.3 ether);
+        assertEq(house.balances(artist, address(0)), 1.5 ether);
+        assertEq(house.balances(address(house), address(0)), 0.1 ether);
+        assertEq(house.balances(house.BUYBACK(), address(0)), 0.1 ether);
         assertEq(address(source).balance, 0);
         vm.expectRevert(ArtifactsSource.AuctionNotOpen.selector);
         source.settle();
@@ -1268,9 +1327,8 @@ contract SourceEdgeTest is Fixture {
         vm.prank(alice);
         piece.list(10 ether);
         vm.prank(bob);
-        piece.buy{value: 10 ether}(keccak256("bob"), address(0));
-        vm.prank(alice);
-        piece.postEscrowKey("k");
+        piece.buy{value: 10 ether}(_vk("bob"), address(0));
+        _postKey(piece, alice, (10 ether) / 10);
         uint256 artistBefore = house.balances(artist, address(0));
         vm.prank(bob);
         piece.release();
@@ -1281,7 +1339,7 @@ contract SourceEdgeTest is Fixture {
         assertTrue(piece.revealed());
     }
 
-    function test_settleWithUnapprovedBrokerPaysHouse() public {
+    function test_settleWithUnapprovedBrokerPaysTheBurn() public {
         _lock();
         vm.prank(curator);
         source.setAuction(1 ether, uint64(vm.getBlockTimestamp() + 1 hours));
@@ -1290,12 +1348,16 @@ contract SourceEdgeTest is Fixture {
         vm.warp(vm.getBlockTimestamp() + 1 hours);
         source.settle();
         assertEq(house.balances(alice, address(0)), 0);
-        assertEq(house.balances(address(house), address(0)), 0.3 ether);
+        assertEq(house.balances(address(house), address(0)), 0.05 ether);
+        assertEq(house.balances(house.BUYBACK(), address(0)), 0.2 ether, "5% + the unearned 15%");
     }
 }
 
 /// @dev The launched runtimes: bounded size, no DELEGATECALL / CALLCODE / SELFDESTRUCT, and no renounce path.
 contract RuntimeTest is Fixture {
+    /// @dev Walks the instructions (skipping PUSH data). The compiler ends the code with INVALID (0xfe) and appends
+    /// constant data after it, which is never executed; the walk stops there, and that boundary must sit in the last
+    /// few hundred bytes, so no real code can hide behind it.
     function _scan(address a) internal view {
         bytes memory code = a.code;
         assertGt(code.length, 0);
@@ -1306,6 +1368,10 @@ contract RuntimeTest is Fixture {
                 j += op - 0x5f;
                 continue;
             }
+            if (op == 0xfe) {
+                assertLe(code.length - j, 512, "data after the code is only a short tail");
+                return;
+            }
             assertTrue(op != 0xf4 && op != 0xf2 && op != 0xff, "forbidden opcode in a launched runtime");
         }
     }
@@ -1314,6 +1380,7 @@ contract RuntimeTest is Fixture {
         _scan(address(store));
         _scan(address(house));
         _scan(address(pieceImpl));
+        _scan(address(keyProof));
         _scan(address(factory));
         _scan(address(source));
         _scan(house.collectionImplementation());
@@ -1331,7 +1398,7 @@ contract RuntimeTest is Fixture {
 
     function test_implementationsAreLocked() public {
         vm.expectRevert(ArtifactsPiece.AlreadyInitialized.selector);
-        pieceImpl.initialize(alice, alice, 1, alice, _traits(1), address(0), bytes32(0), "", false);
+        pieceImpl.initialize(alice, alice, 1, alice, _traits(1), address(0), bytes32(0), "", false, bytes32(0));
         ArtCollection impl = ArtCollection(house.collectionImplementation());
         vm.expectRevert(ArtCollection.AlreadyInitialized.selector);
         impl.initialize(alice, "x", "x");

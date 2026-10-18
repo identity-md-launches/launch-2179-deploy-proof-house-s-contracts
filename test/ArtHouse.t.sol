@@ -5,6 +5,8 @@ import {Fixture} from "./Fixture.sol";
 import {ArtHouse} from "../src/ArtHouse.sol";
 import {ArtStorage} from "../src/ArtStorage.sol";
 import {ArtCollection} from "../src/ArtCollection.sol";
+import {ImdBuybackBurner} from "../src/ImdBuybackBurner.sol";
+import {MockPoolManager} from "./mocks/MockPoolManager.sol";
 import {TwoStepOwnable} from "../src/base/TwoStepOwnable.sol";
 import {ReentrancyGuard} from "../src/base/ReentrancyGuard.sol";
 import {Reenterer} from "./mocks/Mocks.sol";
@@ -240,21 +242,30 @@ contract ArtHouseTest is Fixture {
     function testFuzz_ethSplitInvariant(uint96 price, bool useBroker, bool brokerIsBuyer) public {
         vm.assume(price > 0);
         _ready(price, 0);
+        // the buyer may broker their own buy once approved (a Broker Pass perk)
+        if (useBroker && brokerIsBuyer) {
+            vm.prank(curator);
+            house.setBroker(alice, true);
+        }
         address b = useBroker ? (brokerIsBuyer ? alice : broker) : address(0);
         vm.deal(alice, price);
         vm.prank(alice);
         house.mint{value: price}(address(col), 0, b);
         assertEq(col.ownerOf(0), alice);
         uint256 artistBal = house.balances(artist, address(0));
-        uint256 brokerBal = house.balances(broker, address(0));
+        uint256 brokerBal = house.balances(b == address(0) ? broker : b, address(0));
         uint256 houseBal = house.balances(address(house), address(0));
-        assertEq(artistBal + brokerBal + houseBal, price, "conservation");
-        assertEq(artistBal, uint256(price) * 7000 / 10_000);
-        if (useBroker && !brokerIsBuyer) {
+        uint256 burnBal = house.balances(house.BUYBACK(), address(0));
+        assertEq(artistBal + brokerBal + houseBal + burnBal, price, "conservation");
+        assertEq(artistBal, uint256(price) * 7500 / 10_000);
+        assertGe(houseBal, uint256(price) * 500 / 10_000);
+        if (useBroker) {
             assertEq(brokerBal, uint256(price) * 1500 / 10_000);
+            assertEq(burnBal, uint256(price) * 500 / 10_000);
         } else {
+            // nobody earned the broker's share: it buys back and burns IMD
             assertEq(brokerBal, 0);
-            assertGe(houseBal, uint256(price) * 3000 / 10_000);
+            assertEq(burnBal, uint256(price) * 500 / 10_000 + uint256(price) * 1500 / 10_000);
         }
         assertEq(address(house).balance, price);
         // withdrawals drain exactly the balances
@@ -267,11 +278,33 @@ contract ArtHouseTest is Fixture {
         house.withdrawHouse(address(0));
         assertEq(curator.balance, houseBal);
         if (brokerBal > 0) {
-            vm.prank(broker);
+            uint256 beforeW = b.balance;
+            vm.prank(b);
             house.withdraw(address(0));
-            assertEq(broker.balance, brokerBal);
+            assertEq(b.balance - beforeW, brokerBal);
         }
-        assertEq(address(house).balance, 0);
+        assertEq(address(house).balance, burnBal, "only the buyback balance stays, for the burner");
+    }
+
+    /// A sale paid in IMD leaves its buyback share in IMD: released to the burner, it goes to the dead address as it is.
+    function test_imdBuybackIsReleasedAndBurned() public {
+        ImdBuybackBurner burner = new ImdBuybackBurner(address(house), address(new MockPoolManager(1)), address(imd), 10_000, 200, address(0));
+        vm.prank(curator);
+        house.setBuybackBurner(address(burner));
+        uint256 price = 100 ether;
+        _ready(0, price);
+        imd.mint(alice, price);
+        vm.startPrank(alice);
+        imd.approve(address(house), price);
+        house.mintWithIMD(address(col), 1, address(0), price);
+        vm.stopPrank();
+        uint256 buyback = house.balances(house.BUYBACK(), address(imd));
+        assertEq(buyback, 20 ether, "5% plus the unearned 15%");
+        house.releaseBuyback(address(imd));
+        assertEq(imd.balanceOf(address(burner)), buyback);
+        burner.burnImd();
+        assertEq(imd.balanceOf(0x000000000000000000000000000000000000dEaD), buyback);
+        assertEq(burner.totalImdBurned(), buyback);
     }
 
     function testFuzz_imdSplitInvariant(uint96 price, bool useBroker) public {
@@ -286,7 +319,8 @@ contract ArtHouseTest is Fixture {
         uint256 artistBal = house.balances(artist, address(imd));
         uint256 brokerBal = house.balances(broker, address(imd));
         uint256 houseBal = house.balances(address(house), address(imd));
-        assertEq(artistBal + brokerBal + houseBal, price);
+        uint256 burnBal = house.balances(house.BUYBACK(), address(imd));
+        assertEq(artistBal + brokerBal + houseBal + burnBal, price);
         assertEq(imd.balanceOf(address(house)), price);
         assertEq(brokerBal, useBroker ? uint256(price) * 1500 / 10_000 : 0);
         // ETH balances untouched
@@ -336,9 +370,9 @@ contract ArtHouseTest is Fixture {
     function test_customSplit() public {
         vm.prank(curator);
         vm.expectRevert(ArtHouse.BadSplit.selector);
-        house.setSplit(address(col), 1000, 1000, 1000);
+        house.setSplit(address(col), 1000, 1000, 1000, 1000);
         vm.prank(curator);
-        house.setSplit(address(col), 1000, 2000, 7000);
+        house.setSplit(address(col), 1000, 2000, 7000, 0);
         _ready(1 ether, 0);
         vm.prank(alice);
         house.mint{value: 1 ether}(address(col), 0, broker);
@@ -363,7 +397,7 @@ contract ArtHouseTest is Fixture {
         house.withdrawHouse(address(0));
         vm.prank(bob);
         house.withdrawHouse(address(0));
-        assertEq(bob.balance, 1000 ether + 0.3 ether);
+        assertEq(bob.balance, 1000 ether + 0.05 ether, "the house's 5%; the unearned 15% went to the burn");
     }
 
     function test_reentrancyOnWithdrawBlocked() public {

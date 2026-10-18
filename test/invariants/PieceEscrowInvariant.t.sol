@@ -2,12 +2,13 @@
 pragma solidity 0.8.26;
 
 import {ArtHouse} from "../../src/ArtHouse.sol";
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 import {Fixture} from "../Fixture.sol";
 import {ArtifactsPiece} from "../../src/ArtifactsPiece.sol";
+import {KeyProof} from "../../src/KeyProof.sol";
 
-/// @dev Drives one claimed piece's keyed resale escrow, plain transfers, re-keying and withdrawals with four
-/// actors calling in random order. Each action computes from the contract's state whether it must succeed, and
+/// @dev Drives one claimed piece's keyed resale escrow (keys sent with the seller's deposit, keys proven fake, the
+/// seller's refunds), plain transfers, re-keying and withdrawals with four actors calling in random order. Each action computes from the contract's state whether it must succeed, and
 /// asserts exactly that, so access control and ordering rules are checked on every call.
 contract EscrowHandler is Test {
     ArtifactsPiece public piece;
@@ -20,6 +21,12 @@ contract EscrowHandler is Test {
     uint256 public releases;
     uint256 public cancels;
     uint256 public transfers;
+    uint256 public proofs;
+    uint256 public refunds;
+
+    uint256 internal constant N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
+    mapping(bytes32 => uint256) internal secretOf; // each viewing key a buyer used, and its secret
+    uint256 internal postedE; // the scalar behind the posted key's E
 
     constructor(ArtifactsPiece p, address[] memory actors_, address royaltyTo_) {
         piece = p;
@@ -37,7 +44,12 @@ contract EscrowHandler is Test {
         view
         returns (uint256 price, address seller, address buyer, uint64 paidAt, bool keyPosted)
     {
-        (price, seller, buyer, paidAt, keyPosted,,) = piece.escrow();
+        (price, seller, buyer, paidAt, keyPosted,,,,,) = piece.escrow();
+    }
+
+    /// @dev When the key arrived, and the seller's deposit.
+    function _state() internal view returns (uint64 keyPostedAt, uint256 deposit) {
+        (,,,,,,, keyPostedAt,, deposit) = piece.escrow();
     }
 
     function list(uint256 a, uint256 price) external {
@@ -73,6 +85,12 @@ contract EscrowHandler is Test {
         (uint256 price, address seller, address buyer,,) = _escrow();
         uint256 value = exact ? price : (a % 2 == 0 ? price + 1 : (price == 0 ? 0 : price - 1));
         vm.deal(actor, actor.balance + value);
+        if (key != bytes32(0)) {
+            // a valid viewing key, and its secret (for the point with an even y) so this buyer can prove a fake
+            Vm.Wallet memory w = vm.createWallet(uint256(key) % 1e70 + 1);
+            key = bytes32(w.publicKeyX);
+            secretOf[key] = w.publicKeyY & 1 == 1 ? N - w.privateKey : w.privateKey;
+        }
         bool ok = seller != address(0) && buyer == address(0) && exact && key != bytes32(0) && actor != seller;
         vm.prank(actor);
         if (!ok) vm.expectRevert();
@@ -86,15 +104,32 @@ contract EscrowHandler is Test {
         }
     }
 
-    function postKey(uint256 a, bytes calldata wrapped) external {
+    /// @dev A key as a seller's tool makes it (E = e·G, a junk masked key) with its proof, or (`proven` false) the same
+    /// key with a broken proof, which is refused.
+    function postKey(uint256 a, uint256 eSeed, bool proven) external {
         address actor = actors[a % actors.length];
-        (, address seller, address buyer,, bool keyPosted) = _escrow();
-        bool ok = actor == seller && buyer != address(0) && !keyPosted && wrapped.length > 0;
+        (uint256 price, address seller, address buyer,, bool keyPosted) = _escrow();
+        (,,,,,,,, bytes32 vk,) = piece.escrow();
+        bool ok = actor == seller && buyer != address(0) && !keyPosted && proven;
+        uint256 e = eSeed % (N - 1) + 1;
+        if (vm.createWallet(e).publicKeyY & 1 == 1) e = N - e;
+        bytes memory wrapped = abi.encodePacked(uint8(2), vm.createWallet(e).publicKeyX, keccak256(abi.encode(eSeed)));
+        uint256 k = uint256(keccak256(abi.encode("k", eSeed))) % (N - 1) + 1;
+        address r = vm.addr(k);
+        uint256 c = uint256(keccak256(abi.encodePacked("Proof House key wrap v2 proof", block.chainid, address(piece), buyer, vk, keccak256(wrapped), r))) % N;
+        uint256 z = addmod(k, mulmod(c, e, N), N);
+        if (!proven) z = addmod(z, 1, N);
+        uint256 deposit = piece.depositFor(price);
+        vm.deal(actor, actor.balance + deposit);
         vm.prank(actor);
         if (!ok) vm.expectRevert();
-        piece.postEscrowKey(wrapped);
+        piece.postEscrowKey{value: deposit}(wrapped, r, z);
         if (ok) {
-            (,,,, bool posted,,) = piece.escrow();
+            postedE = e;
+            paidIn += deposit;
+            (, uint256 d) = _state();
+            assertEq(d, deposit);
+            (,,,, bool posted,,,,,) = piece.escrow();
             assertTrue(posted);
         }
     }
@@ -102,7 +137,8 @@ contract EscrowHandler is Test {
     function cancel(uint256 a) external {
         address actor = actors[a % actors.length];
         (uint256 price,, address buyer,, bool keyPosted) = _escrow();
-        bool ok = actor == buyer && !keyPosted;
+        (,,, uint64 paidAt,) = _escrow();
+        bool ok = actor == buyer && !keyPosted && block.timestamp >= paidAt + piece.SELLER_WINDOW();
         uint256 pendingBefore = piece.pendingWithdrawals(actor);
         vm.prank(actor);
         if (!ok) vm.expectRevert();
@@ -117,11 +153,12 @@ contract EscrowHandler is Test {
 
     function release(uint256 a) external {
         address actor = actors[a % actors.length];
-        (uint256 price, address seller, address buyer, uint64 paidAt, bool keyPosted) = _escrow();
-        bool ok = buyer != address(0) && keyPosted && (actor == buyer || block.timestamp >= paidAt + 72 hours);
+        (uint256 price, address seller, address buyer,, bool keyPosted) = _escrow();
+        (uint64 keyAt, uint256 deposit) = _state();
+        bool ok = buyer != address(0) && keyPosted && (actor == buyer || block.timestamp >= keyAt + 72 hours);
         uint256 sellerBefore = piece.pendingWithdrawals(seller);
         uint256 ledgerBefore = ArtHouse(address(piece.house())).balances(royaltyTo, address(0));
-        (,,,,, bytes memory keyBefore,) = piece.escrow();
+        (,,,,, bytes memory keyBefore,,,,) = piece.escrow();
         vm.prank(actor);
         if (!ok) vm.expectRevert();
         piece.release();
@@ -129,7 +166,7 @@ contract EscrowHandler is Test {
             uint256 royalty = (price * 750) / 10_000;
             assertEq(piece.ownerOf(1), buyer, "token to the buyer");
             // the royalty is credited to the artist in the ledger; the seller's proceeds stay on the piece
-            assertEq(piece.pendingWithdrawals(seller), sellerBefore + price - royalty, "seller proceeds");
+            assertEq(piece.pendingWithdrawals(seller), sellerBefore + price - royalty + deposit, "seller proceeds and deposit");
             assertEq(
                 ArtHouse(address(piece.house())).balances(royaltyTo, address(0)),
                 ledgerBefore + royalty,
@@ -143,6 +180,70 @@ contract EscrowHandler is Test {
             assertEq(b, address(0));
             ghostOwner = buyer;
             releases++;
+        }
+    }
+
+    /// @dev Only the buyer, only with a key posted. The keys posted here are junk, so the buyer proves it (a real
+    /// proof, made from scalars: every point is a multiple of G): payment and deposit to the buyer, the seller keeps
+    /// the piece.
+    function proveFake(uint256 a) external {
+        address actor = actors[a % actors.length];
+        (uint256 price,, address buyer,, bool keyPosted) = _escrow();
+        (,,,,,,,, bytes32 vk,) = piece.escrow();
+        (, uint256 deposit) = _state();
+        bool ok = buyer != address(0) && actor == buyer && keyPosted;
+        uint256 before = piece.pendingWithdrawals(actor);
+        address owner = piece.ownerOf(1);
+        KeyProof.Proof memory proof;
+        if (keyPosted && secretOf[vk] != 0) proof = _fakeProof(actor, vk, secretOf[vk], postedE);
+        vm.prank(actor);
+        if (!ok) vm.expectRevert();
+        piece.proveFakeKey(proof);
+        if (ok) {
+            assertEq(piece.pendingWithdrawals(actor), before + price + deposit, "payment and deposit");
+            assertEq(piece.ownerOf(1), owner, "the seller keeps the piece");
+            (, address s, address b,,) = _escrow();
+            assertEq(s, address(0));
+            assertEq(b, address(0));
+            proofs++;
+        }
+    }
+
+    /// @dev The seller may end a sale before sending the key, refunding the buyer in full.
+    function _fakeProof(address buyer, bytes32 vk, uint256 b, uint256 e) internal returns (KeyProof.Proof memory) {
+        uint256 w = uint256(keccak256(abi.encode("w", e, b))) % (N - 1) + 1;
+        Vm.Wallet memory S = vm.createWallet(mulmod(b, e, N));
+        Vm.Wallet memory A1 = vm.createWallet(w);
+        Vm.Wallet memory A2 = vm.createWallet(mulmod(w, e, N));
+        uint256 c = uint256(
+            keccak256(
+                abi.encodePacked(
+                    "Proof House fake key v2", block.chainid, address(piece), buyer, uint256(vk), vm.createWallet(e).publicKeyX,
+                    S.publicKeyX, S.publicKeyY, A1.publicKeyX, A1.publicKeyY, A2.publicKeyX, A2.publicKeyY
+                )
+            )
+        ) % N;
+        Vm.Wallet memory X = vm.createWallet(mulmod(c, mulmod(b, e, N), N));
+        return KeyProof.Proof(
+            S.publicKeyX, S.publicKeyY, A1.publicKeyX, A1.publicKeyY, A2.publicKeyX, A2.publicKeyY, X.publicKeyX, X.publicKeyY,
+            addmod(w, mulmod(c, b, N), N)
+        );
+    }
+
+    function refundBuyer(uint256 a) external {
+        address actor = actors[a % actors.length];
+        (uint256 price, address seller, address buyer,, bool keyPosted) = _escrow();
+        bool ok = buyer != address(0) && actor == seller && !keyPosted;
+        uint256 before = buyer == address(0) ? 0 : piece.pendingWithdrawals(buyer);
+        vm.prank(actor);
+        if (!ok) vm.expectRevert();
+        piece.refundBuyer();
+        if (ok) {
+            assertEq(piece.pendingWithdrawals(buyer), before + price, "full refund");
+            (, address s, address b,,) = _escrow();
+            assertEq(s, address(0));
+            assertEq(b, address(0));
+            refunds++;
         }
     }
 
@@ -240,7 +341,8 @@ contract EscrowHandler is Test {
     }
 
     function warp(uint256 delta) external {
-        vm.warp(block.timestamp + bound(delta, 1, 80 hours));
+        // mostly within the 72 hours, sometimes past the 14-day report window
+        vm.warp(block.timestamp + bound(delta, 1, delta % 5 == 0 ? 15 days : 80 hours));
     }
 }
 
@@ -268,8 +370,8 @@ contract PieceEscrowInvariantTest is Fixture {
     }
 
     function _held() internal view returns (uint256) {
-        (uint256 price,, address buyer,,,,) = piece.escrow();
-        return buyer == address(0) ? 0 : price;
+        (uint256 price,, address buyer,,,,,,, uint256 deposit) = piece.escrow();
+        return buyer == address(0) ? 0 : price + deposit;
     }
 
     /// @dev The piece holds exactly the escrowed payment plus every pending withdrawal, and nothing else.
@@ -296,7 +398,7 @@ contract PieceEscrowInvariantTest is Fixture {
 
     /// @dev While a buyer's payment sits in escrow the seller still owns the token.
     function invariant_escrowSellerOwns() public view {
-        (, address seller, address buyer,,,,) = piece.escrow();
+        (, address seller, address buyer,,,,,,,) = piece.escrow();
         if (buyer != address(0)) {
             assertEq(piece.ownerOf(1), seller, "seller keeps the token until release");
             assertTrue(seller != buyer);
