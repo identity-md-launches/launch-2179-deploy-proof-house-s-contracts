@@ -3,10 +3,10 @@ pragma solidity 0.8.26;
 
 import {IBalanceOf, IOwnerOf} from "../interfaces/Interfaces.sol";
 
-/// @notice Holders first: for the first `gateSeconds` of a sale, only holders of an identity.md seat or of at least
-/// `gateMinBalance` of a token (IMD) may buy; after that, anyone. The owner sets it before the sale opens: the editions'
-/// rules are fixed once their sale opens, THE SOURCE's from its first bid. A seat or token contract that cannot answer
-/// counts as not held.
+/// @notice Holders first: for the first `gateSeconds` of a sale, only holders of an identity.md seat, of at least
+/// `gateMinBalance` of a token (IMD), or members of a membership contract (Cncptl Prspctv: any points) may buy; after
+/// that, anyone. The owner sets it before the sale opens: the editions' rules are fixed once their sale opens, THE
+/// SOURCE's from its first bid. A seat, token or membership contract that cannot answer counts as not held.
 abstract contract HolderGate {
     uint64 public constant MAX_GATE_SECONDS = 30 days;
 
@@ -14,8 +14,14 @@ abstract contract HolderGate {
     address public gateToken; // IMD (ERC-20)
     uint256 public gateMinBalance; // in the token's smallest unit
     uint64 public gateSeconds; // 0: no holders window
+    /// @notice Members: `gateMember`'s view `gateMemberCall`(wallet) returns at least `gateMemberMin` (0: no members).
+    address public gateMember; // Cncptl Prspctv's points (EngageV2), read with points(address)
+    bytes4 public gateMemberCall;
+    uint256 public gateMemberMin;
+    uint256 public constant MEMBER_CALL_GAS = 100_000;
 
     event GateSet(address seats, address token, uint256 minBalance, uint64 gateSeconds);
+    event MemberGateSet(address member, bytes4 call, uint256 minimum);
 
     error NotEligible();
     error BadGate();
@@ -30,6 +36,35 @@ abstract contract HolderGate {
         gateMinBalance = minBalance;
         gateSeconds = seconds_;
         emit GateSet(seats, token, minBalance, seconds_);
+    }
+
+    /// @dev Members as a third way in: a contract, its view taking the wallet and returning a number, and the minimum
+    /// (a membership with no minimum, or a minimum with no contract, is refused). All zero: no members.
+    function _setMemberGate(address member, bytes4 call_, uint256 minimum) internal {
+        if ((member == address(0)) != (minimum == 0) || (member == address(0)) != (call_ == bytes4(0))) revert BadGate();
+        if (member != address(0) && member.code.length == 0) revert BadGate(); // a typo would shut every member out
+        gateMember = member;
+        gateMemberCall = call_;
+        gateMemberMin = minimum;
+        emit MemberGateSet(member, call_, minimum);
+    }
+
+    /// @notice A member: the membership contract's view returns at least the minimum for this wallet. Read with a gas
+    /// cap and only 32 bytes of its answer, so the membership contract can never make a buy fail.
+    function isMember(address account) public view returns (bool) {
+        address m = gateMember;
+        if (m == address(0)) return false;
+        bytes memory data = abi.encodeWithSelector(gateMemberCall, account);
+        uint256 g = MEMBER_CALL_GAS;
+        bool ok;
+        uint256 n;
+        assembly ("memory-safe") {
+            mstore(0, 0)
+            ok := staticcall(g, m, add(data, 32), mload(data), 0, 32)
+            if lt(returndatasize(), 32) { ok := 0 } // after the call: its own answer, a whole word or nothing
+            if ok { n := mload(0) }
+        }
+        return ok && n >= gateMemberMin;
     }
 
     /// @dev Whether a sale that started at `start` is still in its holders window.

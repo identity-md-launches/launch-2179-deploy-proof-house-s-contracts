@@ -91,6 +91,12 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
     mapping(uint256 => uint64) public editionAssignedAt;
     /// @notice A started fallback draw's block (see FALLBACK_BLOCKS); 0 when none.
     mapping(uint256 => uint256) public fallbackBlock;
+    /// @notice The fallback draw under way (its request id; 0: none). One at a time, so editions are drawn in the
+    /// order draws were started, before anyone could know their blocks' hashes: nobody can pick an order to suit them.
+    uint256 public fallbackInFlight;
+    /// @notice The block of Chainlink's latest answer. A fallback draw waits until Chainlink has answered nothing for
+    /// FALLBACK_BLOCKS, so no answer can land between a fallback block's hash becoming known and its draw finishing.
+    uint256 public lastAnsweredBlock;
 
     // ---------- claim ----------
     mapping(address => bytes32) public viewingKeyOf;
@@ -144,6 +150,8 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
     error NeverOpened();
     error NothingToClaim();
     error FallbackPending();
+    error FallbackBusy();
+    error ChainlinkAnswering();
     error NoFallback();
     error FallbackNotReady();
     error FallbackMissed();
@@ -254,6 +262,13 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
         _setGate(seats, token, minBalance, seconds_);
     }
 
+    /// @notice Members of a membership contract (Cncptl Prspctv's points) may also buy in the holders window, as a
+    /// token holder does (buy, buyMany). All zero for none. Set before the sale first opens.
+    function setMemberGate(address member, bytes4 call_, uint256 minimum) external onlyOwner {
+        if (saleOpenedAt != 0) revert SaleIsOpen();
+        _setMemberGate(member, call_, minimum);
+    }
+
     /// @notice Until this time only holders may buy; 0 when there is no holders window or the sale has not opened.
     function gateEndsAt() external view returns (uint256) {
         return gateSeconds == 0 || saleOpenedAt == 0 ? 0 : uint256(saleOpenedAt) + gateSeconds;
@@ -326,7 +341,7 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
     }
 
     function _tokenGate() private view {
-        if (_inGate(saleOpenedAt) && !holdsToken(msg.sender)) revert NotEligible();
+        if (_inGate(saleOpenedAt) && !holdsToken(msg.sender) && !isMember(msg.sender)) revert NotEligible();
     }
 
     function _buy(uint256 quantity, address broker) private returns (uint256[] memory requestIds) {
@@ -357,6 +372,7 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
         if (msg.sender != owner && msg.sender != buyer) revert NotBuyer();
         if (requestEdition[requestId] != 0) revert AlreadyFulfilled();
         if (fallbackBlock[requestId] != 0) revert FallbackPending();
+        if (_fallbackLive(fallbackInFlight)) revert FallbackBusy(); // no new answer while a fallback draw is under way
         if (block.number < requestBlock[requestId] + VRF_RETRY_BLOCKS && _stillHeld(requestId)) revert RequestTooRecent();
         uint256 bought = purchaseBlock[requestId];
         delete requestBuyer[requestId];
@@ -395,20 +411,33 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
     function rawFulfillRandomWords(uint256 requestId, uint256[] calldata randomWords) external {
         if (msg.sender != address(vrfCoordinator)) revert NotCoordinator();
         _assign(requestId, randomWords[0]);
+        lastAnsweredBlock = block.number;
     }
 
-    /// @notice Starts the fallback draw for a purchase Chainlink never answered, FALLBACK_BLOCKS after it was made:
-    /// anyone may, so no paid edition waits on any one person. It picks a block FALLBACK_DELAY ahead, whose hash
+    /// @notice Starts the fallback draw for a purchase Chainlink never answered, FALLBACK_BLOCKS after it was made and
+    /// once Chainlink has answered nothing for as long (while it answers others, ask it again): anyone may, so no paid
+    /// edition waits on any one person. It picks a block FALLBACK_DELAY ahead, whose hash
     /// nobody knows yet. Again only if a started draw's block hash can no longer be read (see BLOCK_HISTORY).
     function startFallbackDraw(uint256 requestId) external {
         if (requestBuyer[requestId] == address(0)) revert UnknownRequest();
         if (requestEdition[requestId] != 0) revert AlreadyFulfilled();
         if (block.number < purchaseBlock[requestId] + FALLBACK_BLOCKS) revert RequestTooRecent();
-        uint256 target = fallbackBlock[requestId];
-        if (target != 0 && (block.number <= target || _hashOf(target) != bytes32(0))) revert FallbackPending();
-        target = block.number + FALLBACK_DELAY;
+        if (block.number < lastAnsweredBlock + FALLBACK_BLOCKS) revert ChainlinkAnswering(); // ask it again instead
+        if (_fallbackLive(requestId)) revert FallbackPending();
+        uint256 busy = fallbackInFlight;
+        if (busy != requestId && _fallbackLive(busy)) revert FallbackBusy(); // finish that one first (anyone may)
+        uint256 target = block.number + FALLBACK_DELAY;
         fallbackBlock[requestId] = target;
+        fallbackInFlight = requestId;
         emit FallbackDrawStarted(requestId, target);
+    }
+
+    /// @dev A started fallback draw still to be finished from its block: not answered meanwhile, and its block either
+    /// still to come or its hash still readable.
+    function _fallbackLive(uint256 requestId) private view returns (bool) {
+        uint256 target = fallbackBlock[requestId];
+        if (target == 0 || requestEdition[requestId] != 0 || requestBuyer[requestId] == address(0)) return false;
+        return block.number <= target || _hashOf(target) != bytes32(0);
     }
 
     /// @notice Finishes a started fallback draw once its block exists (anyone may): the edition is drawn from that
@@ -420,6 +449,7 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
         bytes32 h = _hashOf(target);
         if (h == bytes32(0)) revert FallbackMissed(); // gone from the history too: start it again
         delete fallbackBlock[requestId];
+        if (fallbackInFlight == requestId) delete fallbackInFlight;
         _assign(requestId, uint256(keccak256(abi.encode(h, requestId))));
     }
 

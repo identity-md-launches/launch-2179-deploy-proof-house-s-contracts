@@ -170,6 +170,14 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard, HolderGate {
         _setGate(seats, token, minBalance, seconds_);
     }
 
+    /// @notice Members of a membership contract (Cncptl Prspctv's points) may also bid in the holders window. All zero
+    /// for none. Until the first bid, as the gate.
+    function setMemberGate(address member, bytes4 call_, uint256 minimum) external onlyOwner {
+        if (settled) revert AlreadySettled();
+        if (highBidder != address(0)) revert AuctionLive();
+        _setMemberGate(member, call_, minimum);
+    }
+
     /// @notice Until this time only holders may bid; 0 when there is no holders window or the auction has not opened.
     function gateEndsAt() external view returns (uint256) {
         return gateSeconds == 0 || auctionStart == 0 ? 0 : uint256(auctionStart) + gateSeconds;
@@ -178,7 +186,9 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard, HolderGate {
     function bid(address broker) external payable nonReentrant {
         if (!auctionOpen) revert AuctionNotOpen();
         if (block.timestamp >= endTime) revert AuctionEnded();
-        if (_inGate(auctionStart) && !holdsSeat(msg.sender) && !holdsToken(msg.sender)) revert NotEligible();
+        if (_inGate(auctionStart) && !holdsSeat(msg.sender) && !holdsToken(msg.sender) && !isMember(msg.sender)) {
+            revert NotEligible();
+        }
         if (msg.value < reserve) revert BidTooLow();
         // the 5% raise rounds up, so a bid must strictly exceed the high bid even at dust sizes
         if (highBid != 0 && msg.value < (highBid * (10_000 + MIN_RAISE_BPS) + 9_999) / 10_000) revert BidTooLow();
@@ -211,7 +221,6 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard, HolderGate {
         // so building the revealed tokenURI (the renderer page, ≈12.8 KB, plus the seed) skips a proxy hop.
         piece = Clones.copyCode(pieceImplementation);
         pieceContract = piece;
-        house.recordSale{value: highBid}(address(this), highBidder, highBroker);
         IArtifactsPiece(piece)
             .initialize(
                 address(this),
@@ -227,6 +236,7 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard, HolderGate {
                 true,
                 bytes32(0)
             );
+        house.recordSale{value: highBid}(address(this), highBidder, highBroker); // last: it pays the artist
         emit Settled(highBidder, highBid, piece);
     }
 

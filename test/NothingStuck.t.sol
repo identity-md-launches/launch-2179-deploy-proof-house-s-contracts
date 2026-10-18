@@ -110,6 +110,52 @@ contract NothingStuckTest is Fixture {
         assertEq(factory.editionsOf(alice).length, 1);
     }
 
+    /// @dev One fallback draw at a time, so nobody can choose the order editions are drawn in once hashes are known:
+    /// a second waits until the first is finished, answered by Chainlink, or gone from the history.
+    function test_fallbackDraw_oneAtATime() public {
+        _publishAll();
+        _openSale(1 ether);
+        vm.prank(alice);
+        uint256 a = factory.buy{value: 1 ether}(address(0));
+        vm.prank(bob);
+        uint256 b = factory.buy{value: 1 ether}(address(0));
+        vm.prank(carol);
+        uint256 c = factory.buy{value: 1 ether}(address(0));
+        vm.roll(vm.getBlockNumber() + factory.FALLBACK_BLOCKS());
+        factory.startFallbackDraw(a);
+        assertEq(factory.fallbackInFlight(), a);
+        vm.expectRevert(ArtifactsFactory.FallbackBusy.selector);
+        factory.startFallbackDraw(b);
+        vm.expectRevert(ArtifactsFactory.FallbackPending.selector);
+        factory.startFallbackDraw(a);
+        uint256 target = factory.fallbackBlock(a);
+        vm.roll(target + 1);
+        vm.setBlockhash(target, keccak256("a"));
+        vm.expectRevert(ArtifactsFactory.FallbackBusy.selector); // ready but unfinished: still a's turn
+        factory.startFallbackDraw(b);
+        factory.finishFallbackDraw(a);
+        assertEq(factory.fallbackInFlight(), 0);
+        // b's turn: while it is under way nobody can ask Chainlink again (no answer may land mid-draw)
+        factory.startFallbackDraw(b);
+        vm.prank(carol);
+        vm.expectRevert(ArtifactsFactory.FallbackBusy.selector);
+        factory.rerequestRandomness(c);
+        // Chainlink answers b meanwhile: that frees the way, but a fallback waits until Chainlink has been silent as long
+        vrf.fulfill(b, 7);
+        vm.expectRevert(ArtifactsFactory.ChainlinkAnswering.selector);
+        factory.startFallbackDraw(c);
+        vm.roll(vm.getBlockNumber() + factory.FALLBACK_BLOCKS());
+        factory.startFallbackDraw(c);
+        assertEq(factory.fallbackInFlight(), c);
+        // c's draw is left until its hash is gone: then it is no longer in the way (and may itself start again)
+        uint256 tc = factory.fallbackBlock(c);
+        vm.roll(tc + 257);
+        vm.setBlockhash(tc, bytes32(0));
+        factory.startFallbackDraw(c);
+        assertGt(factory.fallbackBlock(c), tc);
+        assertEq(factory.editionsOf(alice).length + factory.editionsOf(bob).length, 2);
+    }
+
     /// @dev Re-requests never push the fallback back: it counts from the purchase.
     function test_fallbackDraw_countsFromThePurchase() public {
         _publishAll();

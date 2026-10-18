@@ -111,3 +111,37 @@ contract MockBlockHistory {
         return abi.encode(h);
     }
 }
+
+/// @dev Cncptl Prspctv's membership (EngageV2), for tests: soulbound points read with points(address); any points
+/// make a member.
+contract MockPoints {
+    mapping(address => uint256) public points;
+
+    function set(address who, uint256 n) external {
+        points[who] = n;
+    }
+}
+
+/// @dev A membership contract that misbehaves: burns all the gas it gets, answers nothing, or answers a huge payload.
+contract HostilePoints {
+    uint256 public mode; // 0 burn gas, 1 answer nothing, 2 answer 200 KB, 3 answer one nonzero byte
+
+    function setMode(uint256 m) external {
+        mode = m;
+    }
+
+    fallback() external {
+        uint256 m = mode;
+        if (m == 0) while (true) {}
+        if (m == 1) return;
+        if (m == 3) {
+            assembly {
+                mstore(0, shl(248, 1))
+                return(0, 1)
+            }
+        }
+        assembly {
+            return(0, 200000)
+        }
+    }
+}

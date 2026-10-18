@@ -302,6 +302,13 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
         if (broker != seller && _isBroker(broker)) brokerShare = (price * RESALE_BROKER_BPS) / BPS;
         else broker = address(0);
         pendingWithdrawals[seller] += price - royalty - brokerShare + deposit;
+        // The piece and its key are the buyer's before any outside call (the ledger pays the artist directly), so
+        // nothing called from there can list, move or reveal it as the seller's.
+        _releasing = true;
+        _transfer(seller, buyer, TOKEN_ID);
+        _releasing = false;
+        wrappedKey = key;
+        delete previousOwner; // the escrowed key is delivered; the paid seller keeps no re-key right
         // The royalty and broker share go to the ledger, so each party withdraws once from one place. If the
         // ledger refuses (e.g. this piece's module was revoked), they stay here as pull payments instead.
         uint256 toLedger = royalty + brokerShare;
@@ -312,11 +319,6 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
                 if (brokerShare > 0) pendingWithdrawals[broker] += brokerShare;
             }
         }
-        _releasing = true;
-        _transfer(seller, buyer, TOKEN_ID);
-        _releasing = false;
-        wrappedKey = key;
-        delete previousOwner; // the escrowed key is delivered; the paid seller keeps no re-key right
         emit EscrowReleased(seller, buyer, price, royalty, broker, brokerShare);
     }
 

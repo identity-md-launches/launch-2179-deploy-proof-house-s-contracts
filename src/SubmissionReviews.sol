@@ -26,9 +26,12 @@ interface ISourcePieceContract {
 /// it never adds a voice. No owner, no fees, nothing to switch off.
 /// A voice is a number: a seat's is its seat id; a piece's is PIECE_VOICE + its piece id (1 to 255 editions, 256 THE
 /// SOURCE).
-/// Brokers (Broker Pass holders, or wallets the curator approved) may also publish a thesis on a submission: the case
-/// for it, in their own words. Every sale a broker then brings through its link pays it the broker share, as on any
-/// Proof House sale, so a thesis that wins buyers earns. Advisory too: agents vet, a person picks.
+/// Any wallet may also publish a thesis on a submission (the case for it, in its own words), or apply to be a broker
+/// with a thesis for the house itself (applyAsBroker). Neither grants anything: a broker (a Broker Pass holder, or a
+/// wallet the curator approved) earns the broker share on every sale its link brings, so a thesis that wins buyers
+/// earns, and the curator may approve the writers of the best ones. Theses and applications are unverified text
+/// (an "On X:" link can name any account): readers filter by ArtHouse.isEligibleBroker or the curator's own reading.
+/// Advisory too: agents vet, a person picks.
 contract SubmissionReviews {
     enum Verdict {
         None,
@@ -62,7 +65,7 @@ contract SubmissionReviews {
     mapping(uint256 => uint256[]) private _voices;
     // submission id => count of current reviews by verdict (index = Verdict)
     mapping(uint256 => uint256[4]) private _tally;
-    /// @notice When each broker last published a thesis on a submission (0: never), and how many brokers have.
+    /// @notice When each wallet last published a thesis on a submission (0: never), and how many wallets have.
     mapping(uint256 => mapping(address => uint64)) public thesisAt;
     /// @notice When each wallet last applied to be a broker (applyAsBroker); 0 if it never has.
     mapping(address => uint64) public appliedAt;

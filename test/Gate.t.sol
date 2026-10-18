@@ -3,6 +3,7 @@ pragma solidity 0.8.26;
 
 import {Fixture} from "./Fixture.sol";
 import {MockSeats} from "./mocks/MockSeats.sol";
+import {MockPoints, HostilePoints} from "./mocks/Mocks.sol";
 import {ArtifactsFactory} from "../src/ArtifactsFactory.sol";
 import {ArtifactsSource} from "../src/ArtifactsSource.sol";
 import {HolderGate} from "../src/base/HolderGate.sol";
@@ -13,6 +14,7 @@ contract GateTest is Fixture {
     uint256 internal constant MIN_IMD = 10e18;
     uint64 internal constant WINDOW = 24 hours;
     address internal dave = makeAddr("dave");
+    bytes4 internal constant POINTS_SEL = bytes4(keccak256("points(address)"));
 
     function setUp() public override {
         super.setUp();
@@ -194,5 +196,100 @@ contract GateTest is Fixture {
         vm.prank(curator);
         vm.expectRevert(ArtifactsSource.AuctionLive.selector);
         source.setGate(address(0), address(0), 0, 0);
+    }
+
+    // ---------- members (Cncptl Prspctv: any soulbound points) ----------
+
+    function _members(MockPoints points) internal {
+        vm.startPrank(curator);
+        factory.setMemberGate(address(points), POINTS_SEL, 1);
+        source.setMemberGate(address(points), POINTS_SEL, 1);
+        vm.stopPrank();
+    }
+
+    function test_editions_membersBuyInTheWindow_asTokenHoldersDo() public {
+        MockPoints points = new MockPoints();
+        _publishAll();
+        _gateFactory();
+        _members(points);
+        _openSale(0.01 ether);
+        vm.prank(alice);
+        vm.expectRevert(HolderGate.NotEligible.selector);
+        factory.buy{value: 0.01 ether}(address(0));
+        points.set(alice, 1); // one tap in
+        assertTrue(factory.isMember(alice), "read on its own, as the site does");
+        assertTrue(source.isMember(alice));
+        vm.prank(alice);
+        factory.buyMany{value: 0.02 ether}(2, address(0));
+        assertEq(factory.mintedBy(alice), 2);
+        points.set(alice, 0); // spent down: no longer a member
+        vm.prank(alice);
+        vm.expectRevert(HolderGate.NotEligible.selector);
+        factory.buy{value: 0.01 ether}(address(0));
+    }
+
+    function test_auction_membersBid_andTheMemberGateIsFixedFromTheFirstBid() public {
+        MockPoints points = new MockPoints();
+        _openAuction();
+        _members(points);
+        vm.prank(alice);
+        vm.expectRevert(HolderGate.NotEligible.selector);
+        source.bid{value: 1 ether}(address(0));
+        points.set(alice, 11);
+        vm.prank(alice);
+        source.bid{value: 1 ether}(address(0));
+        assertEq(source.highBidder(), alice);
+        vm.prank(curator);
+        vm.expectRevert(ArtifactsSource.AuctionLive.selector);
+        source.setMemberGate(address(0), bytes4(0), 0);
+    }
+
+    function test_memberGateRules() public {
+        MockPoints points = new MockPoints();
+        bytes4 sel = POINTS_SEL;
+        vm.startPrank(curator);
+        vm.expectRevert(HolderGate.BadGate.selector);
+        factory.setMemberGate(address(points), sel, 0); // a membership needs a minimum
+        vm.expectRevert(HolderGate.BadGate.selector);
+        factory.setMemberGate(address(0), sel, 1); // a minimum needs a contract
+        vm.expectRevert(HolderGate.BadGate.selector);
+        factory.setMemberGate(address(points), bytes4(0), 1); // and a contract needs its view
+        vm.expectRevert(HolderGate.BadGate.selector);
+        factory.setMemberGate(address(0), sel, 0);
+        vm.expectRevert(HolderGate.BadGate.selector);
+        factory.setMemberGate(makeAddr("typo"), sel, 1); // no contract there
+        factory.setMemberGate(address(points), sel, 1);
+        factory.setMemberGate(address(0), bytes4(0), 0); // none
+        assertEq(factory.gateMember(), address(0));
+        vm.stopPrank();
+        vm.prank(alice);
+        vm.expectRevert();
+        factory.setMemberGate(address(points), sel, 1);
+        _publishAll();
+        _openSale(0.01 ether);
+        vm.prank(curator);
+        vm.expectRevert(ArtifactsFactory.SaleIsOpen.selector);
+        factory.setMemberGate(address(points), sel, 1);
+    }
+
+    /// @dev A membership contract that burns its gas, answers nothing, answers 200 KB or answers a single byte counts
+    /// as no membership, and can't make a buy run out of gas.
+    function test_aHostileMembershipContractCountsAsNotMember() public {
+        HostilePoints hostile = new HostilePoints();
+        _publishAll();
+        _gateFactory();
+        vm.prank(curator);
+        factory.setMemberGate(address(hostile), POINTS_SEL, 1);
+        _openSale(0.01 ether);
+        for (uint256 m; m < 4; ++m) {
+            hostile.setMode(m);
+            assertFalse(factory.isMember(alice));
+            vm.prank(alice);
+            vm.expectRevert(HolderGate.NotEligible.selector);
+            factory.buy{value: 0.01 ether}(address(0));
+        }
+        imd.mint(alice, MIN_IMD); // a token holder still gets in
+        vm.prank(alice);
+        factory.buy{value: 0.01 ether}(address(0));
     }
 }

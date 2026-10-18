@@ -128,6 +128,8 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
     event Withdrawn(address indexed party, address indexed currency, address to, uint256 amount);
     /// @notice An artist's ETH share, sent straight to their payout address at the sale.
     event ArtistPaid(address indexed artist, address indexed to, uint256 amount);
+    /// @notice The artist's share waits in their balance (another currency, or the payout didn't take ETH).
+    event ArtistCredited(address indexed artist, address indexed currency, uint256 amount);
     event Submitted(uint256 indexed id, address indexed submitter, bytes32 contentHash, string previewURI);
     event SubmissionDecided(uint256 indexed id, SubmissionStatus status);
 
@@ -422,7 +424,7 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
     /// @notice An ARTIFACTS piece contract credits a resale's royalty and broker share here, so the artist and
     /// brokers withdraw once from the ledger instead of from each piece. The caller must be a piece of an approved
     /// module collection, as that module confirms; the ETH comes with the call.
-    function recordResale(address broker, uint256 royalty, uint256 brokerShare) external payable {
+    function recordResale(address broker, uint256 royalty, uint256 brokerShare) external payable nonReentrant {
         address module = IPieceController(msg.sender).controller();
         Collection storage c = collections[module];
         if (!saleModules[module] || !c.exists || !c.isModule || !IPieceRegistry(module).isPiece(msg.sender)) {
@@ -443,7 +445,7 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
     }
 
     /// @notice Approved sale modules record an ETH sale of a module collection; the ETH comes with the call.
-    function recordSale(address collection, address buyer, address broker) external payable {
+    function recordSale(address collection, address buyer, address broker) external payable nonReentrant {
         if (!saleModules[msg.sender]) revert NotSaleModule();
         Collection storage c = collections[collection];
         if (!c.exists || !c.isModule) revert NotModuleCollection();
@@ -484,13 +486,18 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
         if (currency == ETH) {
             address to = artists[artist].payout;
             if (to == address(0)) to = artist;
-            (bool ok,) = to.call{value: amount, gas: ARTIST_PAY_GAS}("");
+            uint256 g = ARTIST_PAY_GAS;
+            bool ok;
+            assembly ("memory-safe") {
+                ok := call(g, to, amount, 0, 0, 0, 0) // nothing returned is copied: no return-data bomb
+            }
             if (ok) {
                 emit ArtistPaid(artist, to, amount);
                 return;
             }
         }
         balances[artist][currency] += amount;
+        emit ArtistCredited(artist, currency, amount);
     }
 
     // ---------- withdrawals ----------
