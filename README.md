@@ -98,12 +98,17 @@ no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime or gener
   `FALLBACK_BLOCKS` (21,600, ~3 days) after the purchase (`purchaseBlock(id)`, carried across re-requests, so they
   never push it back) anyone may `startFallbackDraw(id)`, which picks a block 5 ahead (`fallbackBlock(id)`), then
   `finishFallbackDraw(id)` once that block exists. The edition is drawn from its hash: BLOCKHASH for 256 blocks, then
-  the EIP-2935 history contract (`BLOCK_HISTORY`, 8,191 blocks, ~27 h). A started draw's result stands: it can't be
-  re-requested away, and it can start again only once its block hash can no longer be read at all. A fallback draw
-  also waits until Chainlink has answered nothing for `FALLBACK_BLOCKS` (`lastAnsweredBlock`), and only one runs at a
-  time (`fallbackInFlight`; nobody can re-request meanwhile), so no answer can land between a target hash becoming
-  known and its draw finishing, and nobody can choose the order draws finish in. The house runs a keeper that
-  finishes each the moment its block exists. Whoever builds
+  the EIP-2935 history contract (`BLOCK_HISTORY`, 8,191 blocks, ~27 h). A started draw's result stands: while its
+  block hash can be read it can't be re-requested away, a Chainlink answer to that request is refused once its block
+  is behind us (the hash is public then; before it, an answer still wins), and it can start again only once its hash
+  can no longer be read at all. A draw nobody finished in those ~27 hours is dead: it may start again as above, or
+  the buyer or curator may simply `rerequestRandomness` it (that clears the dead draw) instead of waiting out three
+  silent Chainlink days. A fallback never starts on a request the coordinator still holds that is younger than
+  `VRF_RETRY_BLOCKS` (e.g. one just re-requested): Chainlink might still answer it, and the buyer would hold two draws
+  and keep the one they like. A fallback draw also waits until Chainlink has answered nothing for `FALLBACK_BLOCKS`
+  (`lastAnsweredBlock`), and only one runs at a time (`fallbackInFlight`; nobody can re-request meanwhile), so no
+  answer can land between a target hash becoming known and its draw finishing, and nobody can choose the order draws
+  finish in. The house runs a keeper that finishes each the moment its block exists. Whoever builds
   that block could steer its hash; this only applies after 3 days without Chainlink. Watch `sold` vs `assigned` and
   the `Purchased`/`EditionAssigned`/`Rerequested`/`FallbackDrawStarted` events.
 - **Claim**: buyer `registerViewingKey(viewingKey)` (version 2: the x of a secp256k1 point, see PROTOCOL.md); the
@@ -151,7 +156,10 @@ no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime or gener
   SOURCE byte for byte in any browser (≈2.75M gas; tested under 3M). If the auction ends with no bid the curator
   may set it again. If it isn't settled within `SETTLE_GRACE` (7 days) of its end, anyone may `voidUnsettled()`: the
   high bid is refunded (pull) and the curator may open it again. Its holders window (`setGate`) can be changed until
-  the first bid, then it is fixed.
+  the first bid, then it is fixed. In every holders window (editions and THE SOURCE) a seat, token or membership
+  address that cannot answer, including one with no code at all (a typo, a token that lives on another chain),
+  counts as not held: the other ways in still work and everyone else is refused with `NotEligible`. The gate reads
+  `balanceOf`/`ownerOf` with a raw static call and accepts exactly one return word, as the member gate does.
 - **Views**: `price`, `remaining`, `editionsOf`, `pieceContract`, `traitsOf`, `ciphertextOf`, `commitmentOf`,
   `wrappedKeyOf`, `auctionState`, `sealedSeed`, `keyCommitment`, `keyDelivered`, `rendererChunks`, `revealed`,
   `revealKey`, `revealedSeed`.
@@ -223,7 +231,10 @@ pays the current owner. Every piece pays a 7.5% ERC-2981 royalty to its artist's
 - The curator can close and reopen primary sales, or permanently end edition sales, while existing NFTs remain
   transferable and paid buyers retain their claim paths. Revoking an artist removes curation rights, not their
   payout. Revoking a sale module makes existing pieces credit resale royalties and broker shares to their own
-  pull-payment balances instead of the ledger. The curator can retry VRF and claim on a buyer's behalf, and can
+  pull-payment balances instead of the ledger; revoking THE SOURCE while its auction holds a bid also stops
+  `settle()` (the ledger refuses the sale) until the module is re-approved, or until `SETTLE_GRACE` passes and
+  `voidUnsettled()` refunds the high bid, so bidders trust the curator to keep the module approved through
+  settlement. The curator can retry VRF and claim on a buyer's behalf, and can
   post a key into a claimed piece only while its key slot is empty. These powers are intentional.
 - Only contracts recorded by `ArtifactsFactory.pieceContract` / `isPiece`, `ArtifactsSource.pieceContract`, or
   ArtHouse's collection registry are authentic. Public code and NFT names can always be copied. Initialization

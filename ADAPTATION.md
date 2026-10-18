@@ -13,7 +13,115 @@ to move all configuration into constructors. Artist approval, publication, VRF
 configuration, wiring and sale opening therefore remain owner actions. No missing
 operational value was replaced with a fabricated production address or identifier.
 
-## Reproduced findings and their disposition
+## Review round 4: the independent review of the accepted launch
+
+The accepted work was reopened with two reproducible findings and seven advisory
+ones. Each was reproduced before anything changed; the answers are in
+`.imd-responses.json`. Three source changes resulted, all behaviour-preserving
+outside the reported paths, and no manifest, constructor, configuration or
+dependency changed.
+
+### 07f1616add6c — fallback draw on a request Chainlink still holds: fixed
+
+The supplied proof failed on the accepted tree: at purchase + `FALLBACK_BLOCKS` a
+buyer re-requested their draw and started the fallback on the fresh request in
+the same block, so once the fallback block's hash was public they could let the
+coordinator answer the fresh request instead and keep whichever edition they
+liked.
+
+- `src/ArtifactsFactory.sol::startFallbackDraw`: refuses (`RequestTooRecent`)
+  while the coordinator still holds the request and it is younger than
+  `VRF_RETRY_BLOCKS`, the same `_stillHeld` test `rerequestRandomness` uses. After
+  that Chainlink has dropped the request (24 h) and cannot answer it; a request
+  it answered with a failed callback is no longer held and may fall back at once.
+- `src/ArtifactsFactory.sol::rawFulfillRandomWords`: refuses (`FallbackPending`)
+  an answer to a request whose started fallback block is behind us, since its
+  hash is public from then on; `finishFallbackDraw` assigns it. An answer before
+  the target block still stands, as before.
+
+`test/NothingStuck.t.sol::test_fallbackDraw_countsFromThePurchase` asserted the
+reported behaviour (a fallback started on a request under a day old that the
+coordinator still held). It now expects `RequestTooRecent` until that request is
+`VRF_RETRY_BLOCKS` old, and a new test shows the fallback starting at once when
+the coordinator answered the young request but the callback failed. Regressions:
+`test/ReviewRound4.t.sol` (`test_noFallbackOnARequestChainlinkMayStillAnswer`,
+`test_noChainlinkAnswerOnceTheFallbackHashIsPublic`,
+`testFuzz_theFallbackResultStandsAgainstAnyLateWord`).
+
+### 20ca2ef1fdca — code-less gate address reverts every gated buy or bid: fixed
+
+The supplied proof failed on the accepted tree in all three cases. Solidity's
+`try/catch` only catches the callee's revert; a code-less token returns no data,
+the ABI decode fails in the caller, and `holdsToken`, every `buy`/`buyMany` in the
+window (members included) and every `buyWithSeat`/`ArtifactsSource.bid` with
+code-less seats reverted with no data. The factory's gate cannot be changed once
+the sale has opened, so the only exit was `endSale`.
+
+- `src/base/HolderGate.sol`: `holdsToken`, `holdsSeat` and `_ownsSeat` read
+  `balanceOf`/`ownerOf` through a private `_readWord` (raw static call, 32 bytes
+  copied, success only with exactly 32 bytes returned), the pattern `isMember`
+  already used. No code, a revert, or a malformed answer counts as not held, as
+  the contract's NatSpec promised; `_ownsSeat` also requires the word to equal the
+  account with no bits above the address. `_setGate` still accepts a code-less
+  address (the proof's setup depends on it); the promise is kept at read time.
+
+Regressions in `test/ReviewRound4.t.sol`: code-less token with a member buying
+and a non-holder refused `NotEligible`; code-less seats; a dirty `ownerOf` word; a
+real seat contract unchanged; THE SOURCE's window with code-less seats and token;
+a fuzz that the gate views never revert for any addresses.
+
+### 07bde3893de7 (advisory) — dead fallback draw strands the re-request: fixed
+
+Reproduced by test: once a started draw's hash left BLOCKHASH and the EIP-2935
+history unread, `finishFallbackDraw` reverted `FallbackMissed`, `rerequestRandomness`
+reverted `FallbackPending` for ever, and `startFallbackDraw` reverted
+`ChainlinkAnswering` while Chainlink answered anyone else, so the paid edition
+waited until Chainlink had been silent for three days.
+
+- `src/ArtifactsFactory.sol::rerequestRandomness`: refuses only a live draw
+  (`_fallbackLive(requestId)`) and clears the dead draw's `fallbackBlock` (and
+  `fallbackInFlight` when it is this request) as it re-requests.
+
+A live draw (hash still readable) still cannot be re-requested away by anyone
+(`test_aLiveFallbackDrawStillCannotBeRerequested` and the existing NothingStuck
+test); `test_aDeadFallbackDrawCanBeRerequested` covers the fix. This gives a buyer
+who let a draw die the same re-roll the review's informational finding
+03cc5b5b2e8c already describes for restarting it, without the three-day wait; the
+keeper finishing each draw within ~27 hours remains the fairness guarantee and
+the README now says so.
+
+### Advisory findings left as they are
+
+- ec83ecd2060869 (revoking THE SOURCE strands a live auction until re-approval or
+  the void after `SETTLE_GRACE`): an owner power, already exercised by
+  `test_anAuctionNobodyCanCloseGivesTheBidBack`; the README trust list now states
+  it. Both suggested fixes change agreed behaviour.
+- 6cc4015d311c2f (public burner swap sandwichable): the documented, bounded
+  behaviour of a contract this launch does not deploy; to weigh when the burner
+  is reviewed before `setBuybackBurner`.
+- 03cc5b5b2e8c33 (a dead draw may be restarted): acknowledged in the NatSpec and
+  README; the keeper's liveness is the guarantee.
+- 313dd464f0a1d5 (point-in-time `balanceOf`), edce6803362756 (`allowanceOf` ignores
+  the gate and the sale flag; it cannot know a caller's seat), 6c384346670965
+  (`sealCollection` over an unbounded piece count): documented semantics or
+  informational, each a redesign the brief does not ask for.
+
+`README.md` was updated for the fallback rules, the gate's code-less behaviour and
+the module-revocation trust assumption. Runtime sizes after this round:
+ArtifactsFactory 15,732 bytes (was 15,702), ArtifactsSource 8,323 (was 8,365); the
+other seven launched runtimes are byte-for-byte unchanged, and every launched
+runtime and the generated ERC-721s still pass the opcode and size scans in
+`test/LaunchDeployment.t.sol`.
+
+Verification for this round (Foundry 1.8.3, solc 0.8.26, the repository's
+configuration, fuzz seed `0x9c11807f812cb2361b4137f8ffa9aa8f637b5257d865e6236bfc291828760e1e`):
+`forge build` passes; `forge test` reports **244 passed, 0 failed, 2 skipped**
+(the two fork suites, which need `FORK_URL`), 30 suites, 262 test functions
+listed; both supplied proofs pass when run from `test/scratch/`; nine of the
+eleven new `ReviewRound4` tests fail on the previous source and the two that
+assert unchanged behaviour pass there.
+
+## Reproduced findings and their disposition (round 1, the imported audit)
 
 ### b0f3f99d54ac — generated ERC-721 proxies: fixed
 
@@ -236,8 +344,8 @@ Runtime sizes from the configured compiler (bytes):
 | ArtHouse | 15,979 | 21,182 |
 | KeyProof | 3,151 | 3,177 |
 | ArtifactsPiece | 24,385 | 24,573 |
-| ArtifactsFactory | 15,702 | 16,056 |
-| ArtifactsSource | 8,365 | 8,692 |
+| ArtifactsFactory | 15,732 (round 4; 15,702 before) | 16,086 |
+| ArtifactsSource | 8,323 (round 4; 8,365 before) | 8,650 |
 | BrokerPass | 6,753 | 7,343 |
 | SubmissionReviews | 5,286 | 5,650 |
 | ArtCollection template/copies | 4,735 | 4,779 |

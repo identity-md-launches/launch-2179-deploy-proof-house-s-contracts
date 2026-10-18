@@ -160,7 +160,10 @@ contract NothingStuckTest is Fixture {
         assertEq(factory.editionsOf(alice).length + factory.editionsOf(bob).length, 2);
     }
 
-    /// @dev Re-requests never push the fallback back: it counts from the purchase.
+    /// @dev Re-requests never push the fallback back: it counts from the purchase. But a fallback never starts on a
+    /// request the coordinator still holds and may yet answer (younger than VRF_RETRY_BLOCKS): the buyer would hold two
+    /// draws and pick (review round 4, finding 07f1616add6c). Once Chainlink has dropped it, or answered it without the
+    /// callback landing, the fallback may start.
     function test_fallbackDraw_countsFromThePurchase() public {
         _publishAll();
         _openSale(1 ether);
@@ -173,9 +176,32 @@ contract NothingStuckTest is Fixture {
             id = factory.rerequestRandomness(id);
             assertEq(factory.purchaseBlock(id), at);
         }
+        uint256 lastRequested = factory.requestBlock(id);
         vm.roll(at + factory.FALLBACK_BLOCKS());
-        factory.startFallbackDraw(id); // three days after paying, though the last request is under a day old
+        // three days after paying, but the last request is under a day old and Chainlink still holds it
+        vm.expectRevert(ArtifactsFactory.RequestTooRecent.selector);
+        factory.startFallbackDraw(id);
+        vm.roll(lastRequested + factory.VRF_RETRY_BLOCKS());
+        factory.startFallbackDraw(id); // Chainlink has dropped it by now
         assertGt(factory.fallbackBlock(id), 0);
+    }
+
+    /// @dev The same purchase, when the coordinator answered the young request but its callback failed: it no longer
+    /// holds the request, so nothing can answer it and the fallback may start at once.
+    function test_fallbackDraw_startsOnAYoungRequestTheCoordinatorNoLongerHolds() public {
+        _publishAll();
+        _openSale(1 ether);
+        vm.prank(alice);
+        uint256 id = factory.buy{value: 1 ether}(address(0));
+        uint256 at = vm.getBlockNumber();
+        vm.roll(at + factory.FALLBACK_BLOCKS());
+        vm.prank(alice);
+        id = factory.rerequestRandomness(id);
+        vm.expectRevert(ArtifactsFactory.RequestTooRecent.selector);
+        factory.startFallbackDraw(id);
+        vrf.answerWithFailedCallback(id);
+        factory.startFallbackDraw(id);
+        assertEq(factory.fallbackInFlight(), id);
     }
 
     function test_callbackGasCanOnlyGoUpOnceTheSaleOpens() public {
